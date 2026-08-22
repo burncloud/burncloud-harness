@@ -11,7 +11,6 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureClass {
-    AgentConfiguration,
     AgentCommand,
     GitHistory,
     ScopeViolation,
@@ -26,7 +25,6 @@ pub enum FailureClass {
 impl FailureClass {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::AgentConfiguration => "agent_configuration",
             Self::AgentCommand => "agent_command",
             Self::GitHistory => "git_history",
             Self::ScopeViolation => "scope_violation",
