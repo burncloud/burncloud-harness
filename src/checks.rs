@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeSet, path::Path, process::Command};
 
 use anyhow::{Context, Result};
 
@@ -23,11 +23,13 @@ pub struct CheckResult {
 }
 
 pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<PlannedCheck> {
-    let mut checks = BTreeMap::<String, PlannedCheck>::new();
+    let mut checks = Vec::new();
+    let mut seen = BTreeSet::new();
 
     if changed_paths.iter().any(|path| path.ends_with(".rs")) {
-        insert(
+        push_unique(
             &mut checks,
+            &mut seen,
             "format",
             "cargo fmt --check",
             "BurnCloud TEST_MATRIX default verification ladder",
@@ -94,8 +96,9 @@ pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<
 
     for (prefix, name, command) in mappings {
         if changed_paths.iter().any(|path| path.starts_with(prefix)) {
-            insert(
+            push_unique(
                 &mut checks,
+                &mut seen,
                 name,
                 command,
                 "affected BurnCloud package must compile",
@@ -107,8 +110,9 @@ pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<
         .iter()
         .any(|path| path == "Cargo.toml" || path == "Cargo.lock")
     {
-        insert(
+        push_unique(
             &mut checks,
+            &mut seen,
             "workspace-check",
             "cargo check --workspace",
             "root workspace dependency/API contract changed",
@@ -119,8 +123,9 @@ pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<
         .iter()
         .any(|path| path.starts_with("crates/server/"))
     {
-        insert(
+        push_unique(
             &mut checks,
+            &mut seen,
             "security-invariants",
             "cargo test -p burncloud-server --test security_invariants",
             "BurnCloud security boundary is protected by a dedicated invariant suite",
@@ -132,8 +137,9 @@ pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<
             || path.starts_with("crates/database/crates/router/")
             || path.starts_with("crates/service/crates/router-log/")
     }) {
-        insert(
+        push_unique(
             &mut checks,
+            &mut seen,
             "billing-invariants",
             "cargo test -p burncloud-router --test billing_invariants --test quota_tests",
             "BurnCloud router/billing ownership paths are protected by invariant tests",
@@ -141,17 +147,16 @@ pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<
     }
 
     for extra in extra_checks {
-        checks.insert(
-            format!("extra:{}", extra.name),
-            PlannedCheck {
-                name: extra.name.clone(),
-                command: extra.command.clone(),
-                reason: "task-defined extra verification".into(),
-            },
+        push_unique(
+            &mut checks,
+            &mut seen,
+            &format!("extra:{}", extra.name),
+            &extra.command,
+            "task-defined extra verification",
         );
     }
 
-    checks.into_values().collect()
+    checks
 }
 
 pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> {
@@ -171,12 +176,20 @@ pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> 
     })
 }
 
-fn insert(checks: &mut BTreeMap<String, PlannedCheck>, name: &str, command: &str, reason: &str) {
-    checks.entry(name.to_owned()).or_insert_with(|| PlannedCheck {
-        name: name.to_owned(),
-        command: command.to_owned(),
-        reason: reason.to_owned(),
-    });
+fn push_unique(
+    checks: &mut Vec<PlannedCheck>,
+    seen: &mut BTreeSet<String>,
+    name: &str,
+    command: &str,
+    reason: &str,
+) {
+    if seen.insert(name.to_owned()) {
+        checks.push(PlannedCheck {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            reason: reason.to_owned(),
+        });
+    }
 }
 
 fn shell_command(command: &str) -> Command {
@@ -200,15 +213,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn router_change_gets_burncloud_invariant_gate() {
+    fn router_change_gets_burncloud_invariant_gate_in_ladder_order() {
         let checks = plan_checks(&["crates/router/src/lib.rs".into()], &[]);
         let names = checks
             .iter()
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
-        assert!(names.contains(&"format"));
-        assert!(names.contains(&"router-check"));
-        assert!(names.contains(&"billing-invariants"));
+        assert_eq!(names, vec!["format", "router-check", "billing-invariants"]);
     }
 
     #[test]
