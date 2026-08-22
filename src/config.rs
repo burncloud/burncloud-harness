@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -11,19 +11,48 @@ pub struct TaskSpec {
     pub workspace: String,
     #[serde(default = "default_max_loops")]
     pub max_loops: u32,
-    #[serde(default = "default_true")]
-    pub require_clean_worktree: bool,
-    pub policy: PolicySpec,
+    pub area: BurncloudArea,
+    pub scope: ScopeSpec,
     pub agent: AgentSpec,
     #[serde(default)]
-    pub checks: Vec<CheckSpec>,
+    pub extra_checks: Vec<CheckSpec>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BurncloudArea {
+    Router,
+    Billing,
+    Auth,
+    Channel,
+    Token,
+    Ui,
+    Database,
+    Workspace,
+    Other,
+}
+
+impl BurncloudArea {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Router => "router",
+            Self::Billing => "billing",
+            Self::Auth => "auth",
+            Self::Channel => "channel",
+            Self::Token => "token",
+            Self::Ui => "ui",
+            Self::Database => "database",
+            Self::Workspace => "workspace",
+            Self::Other => "other",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PolicySpec {
-    pub allowed_paths: Vec<String>,
+pub struct ScopeSpec {
+    pub allowed: Vec<String>,
     #[serde(default)]
-    pub denied_paths: Vec<String>,
+    pub avoid: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -62,15 +91,15 @@ impl TaskSpec {
         if self.max_loops == 0 {
             bail!("task.max_loops must be at least 1");
         }
-        if self.policy.allowed_paths.is_empty() {
-            bail!("policy.allowed_paths must not be empty; burncloud-harness fails closed");
+        if self.scope.allowed.is_empty() {
+            bail!("scope.allowed must not be empty; burncloud-harness fails closed");
         }
         if self.agent.program.trim().is_empty() {
             bail!("agent.program must not be empty");
         }
-        for check in &self.checks {
+        for check in &self.extra_checks {
             if check.name.trim().is_empty() || check.command.trim().is_empty() {
-                bail!("every check requires a non-empty name and command");
+                bail!("every extra check requires a non-empty name and command");
             }
         }
         Ok(())
@@ -100,17 +129,17 @@ mod tests {
             goal: "do something".into(),
             workspace: ".".into(),
             max_loops: 1,
-            require_clean_worktree: true,
-            policy: PolicySpec {
-                allowed_paths: vec![],
-                denied_paths: vec![],
+            area: BurncloudArea::Other,
+            scope: ScopeSpec {
+                allowed: vec![],
+                avoid: vec![],
             },
             agent: AgentSpec {
                 program: "agent".into(),
                 args: vec![],
                 append_prompt: true,
             },
-            checks: vec![],
+            extra_checks: vec![],
         };
 
         assert!(task.validate().is_err());
