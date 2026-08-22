@@ -359,7 +359,7 @@ mod tests {
     fn historical_trajectory_without_provenance_is_not_resumable() {
         let unique = unix_ms();
         let root = std::env::temp_dir().join(format!(
-            "burncloud-harness-trajectory-{}-{unique}",
+            "burncloud-harness-trajectory-historical-{}-{unique}",
             std::process::id()
         ));
         let runs = root.join("runs");
@@ -380,7 +380,7 @@ mod tests {
     fn unfinished_checkpoint_with_provenance_is_resumable() {
         let unique = unix_ms();
         let root = std::env::temp_dir().join(format!(
-            "burncloud-harness-trajectory-{}-{unique}",
+            "burncloud-harness-trajectory-unfinished-{}-{unique}",
             std::process::id()
         ));
         let runs = root.join("runs");
