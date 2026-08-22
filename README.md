@@ -26,7 +26,7 @@ Important properties:
 - expands invariant impact from the actual diff rather than trusting only the initial task prediction,
 - blocks high-confidence risk patterns and forces review for suspicious semantic weakening,
 - derives mandatory checks from BurnCloud paths and active invariants,
-- stores append-only JSONL trajectories under Git metadata,
+- records failures as machine-readable classes in append-only trajectories,
 - analyzes those trajectories without automatically changing protected policy.
 
 No graph engine, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
@@ -85,16 +85,25 @@ The path-to-invariant map is intentionally small and BurnCloud-specific. It shou
 
 The risk gate is deterministic. It scans the actual unified diff rather than asking another model whether a patch looks safe.
 
-High-confidence blockers currently include:
-
-- adding `#[ignore]`,
-- adding `#[allow(clippy::unwrap_used)]`,
-- deleting a dedicated BurnCloud invariant test file,
-- removing protected security-boundary symbols without replacement in their documented ownership files.
+High-confidence blockers currently include adding `#[ignore]`, adding `#[allow(clippy::unwrap_used)]`, deleting a dedicated BurnCloud invariant test file, and removing protected security-boundary symbols without replacement in their documented ownership files.
 
 Lower-confidence findings force one explicit review pass before verification. Current review findings include reduced assertions, new TODO/FIXME markers in runtime source, and reduced fail-closed/error constructs in sensitive paths.
 
-Every finding is written to the trajectory.
+## Structured failure taxonomy
+
+Retry feedback is useful to the agent, but free-form text is poor data for Harness evolution. Every failure now emits a separate `failure_recorded` trajectory event with a stable class:
+
+- `agent_command` — the coding agent process failed,
+- `git_history` — the agent changed HEAD or repository history,
+- `scope_violation` — the actual diff escaped the declared allowlist,
+- `invariant_expansion` — the actual diff introduced invariant impact not present in the pre-change contract,
+- `no_change` — the agent completed without producing the required repository change,
+- `risk_block` — deterministic final-diff policy found a blocking regression pattern,
+- `risk_review` — the diff requires one explicit semantic review pass,
+- `verification` — a mandatory BurnCloud check or invariant suite failed,
+- `max_loops` — the task exhausted its bounded retry budget.
+
+The natural-language feedback remains available to the next agent attempt, but analysis no longer has to guess the reason for failure from prose.
 
 ## BurnCloud-aware verification
 
@@ -111,48 +120,34 @@ Task-specific checks may be added, but built-in BurnCloud checks cannot be disab
 
 ## Trajectory analysis
 
-Each run records task routing, invariant selection/expansion, actual changed paths, risk findings, verification results, retry feedback, and final outcome.
+Each run records task routing, invariant selection/expansion, actual changed paths, structured failure classes, risk findings, verification results, retry feedback, and final outcome.
 
-`analyze` reads the latest JSONL runs and reports:
-
-- pass/fail/incomplete runs and success rate,
-- average attempts per run,
-- agent command failures,
-- task-area distribution,
-- repeated invariant expansions,
-- final-diff risk codes,
-- failed verification gates,
-- scope-violation paths,
-- repeated signals occurring at least three times.
+`analyze` reads the latest JSONL runs and reports pass/fail/incomplete runs, success rate, average attempts, task areas, failure classes, invariant expansions, risk codes, failed verification gates, scope-violation paths, and repeated signals occurring at least three times.
 
 Example shape:
 
 ```text
 BurnCloud Harness Trajectory Analysis
 runs=42 pass=35 fail=7 incomplete=0 success_rate=83.3% avg_attempts=2.10
-agent_failures=3 scope_violation_events=2 parse_errors=0
+
+Failure classes:
+- 9x verification
+- 5x invariant_expansion
+- 3x risk_review
 
 Invariant expansions:
 - 8x INV-BILLING-001
 
-Final-diff risk signals:
-- 5x ASSERTION_WEAKENING
-
 Failed verification gates:
 - 6x billing-invariants
-
-Repeated signals worth harness review (>=3):
-- invariant expansion: INV-BILLING-001 (8x)
-- risk: ASSERTION_WEAKENING (5x)
-- verification failure: billing-invariants (6x)
 ```
 
-The analyzer intentionally stops there. Repetition is evidence for a human/harness-engineering decision; it is **not** permission for the worker agent to rewrite its own security policy.
+The analyzer intentionally stops at evidence. Repetition is input to a human/harness-engineering decision; it is **not** permission for the worker agent to rewrite its own security policy.
 
 ## Evolution rule
 
 A useful BurnCloud failure should move through this ladder only when evidence supports it:
 
-`trajectory signal -> repeated pattern -> human review -> stronger routing/invariant/check/risk rule -> regression verification`
+`structured failure -> repeated pattern -> human review -> stronger routing/invariant/check/risk rule -> regression verification`
 
-The next useful layer is better failure classification and evidence around those repeated signals, not broader orchestration.
+The next useful layer is associating repeated failure classes with task areas and changed paths so we can tell **where** a Harness weakness lives, not merely how often it occurs.
