@@ -234,11 +234,9 @@ impl ConsoleObserver {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if matches!(
-                    key.code,
-                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')
-                ) || (key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL))
+                if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'))
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
                 {
                     return Ok(());
                 }
@@ -422,10 +420,7 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &DashboardState) {
     let mut spans = Vec::new();
     for (index, phase) in phases.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(
-                " -> ",
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(" -> ", Style::default().fg(Color::DarkGray)));
         }
         let active = state.phase == Some(*phase);
         let style = if active {
@@ -474,11 +469,7 @@ fn draw_invariants(frame: &mut Frame, area: Rect, state: &DashboardState) {
     for invariant in state.invariants.iter().take(6) {
         let is_new = state.newly_required.iter().any(|item| item == invariant);
         let marker = if is_new { "+NEW " } else { "KEEP " };
-        let color = if is_new {
-            Color::Yellow
-        } else {
-            Color::Cyan
-        };
+        let color = if is_new { Color::Yellow } else { Color::Cyan };
         lines.push(Line::from(vec![
             Span::styled(
                 marker,
