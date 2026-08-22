@@ -53,6 +53,24 @@ cargo run -- recommend ../burncloud --limit 100 --min-count 3
 
 `recommend` is also read-only. It converts repeated area/domain failure hotspots into explicit improvement proposals with the supporting count. It cannot change prompts, permissions, invariant mappings, tests, or protected policy.
 
+## Codex invocation
+
+For current Codex CLI versions, BurnCloud tasks should use an explicit workspace-write sandbox:
+
+```yaml
+agent:
+  program: codex
+  args:
+    - exec
+    - --sandbox
+    - workspace-write
+  append_prompt: true
+```
+
+Older task files that still contain `--full-auto` are normalized by `burncloud-harness` to `--sandbox workspace-write` when the configured agent program is Codex. This keeps historical task files working while making the effective permission mode explicit.
+
+The Codex sandbox is **not** the BurnCloud scope boundary. Codex may write inside the checkout, while `burncloud-harness` independently inspects the real Git diff and rejects changes outside the task allowlist.
+
 ## Ratatui Harness Console
 
 The console exists to improve the developer's mental model, not merely to make logs prettier.
@@ -133,7 +151,8 @@ agent:
   program: codex
   args:
     - exec
-    - --full-auto
+    - --sandbox
+    - workspace-write
   append_prompt: true
 
 extra_checks: []
