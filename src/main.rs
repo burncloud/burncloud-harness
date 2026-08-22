@@ -42,7 +42,10 @@ fn main() -> Result<()> {
             let workspace = workspace.canonicalize()?;
             burncloud::BurncloudRepo::open(workspace.as_path())?;
             git::GitRepo::new(workspace.as_path()).ensure_repository()?;
-            println!("BurnCloud harness preflight passed: {}", workspace.display());
+            println!(
+                "BurnCloud harness preflight passed: {}",
+                workspace.display()
+            );
         }
         Commands::Run { task } => {
             let task = TaskSpec::load(task)?;
