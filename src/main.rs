@@ -4,6 +4,7 @@ mod config;
 mod git;
 mod invariants;
 mod policy;
+mod risk;
 mod route;
 mod runner;
 mod trajectory;
