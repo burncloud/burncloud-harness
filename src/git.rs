@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    path::PathBuf,
-    process::Command,
-};
+use std::{collections::BTreeSet, path::PathBuf, process::Command};
 
 use anyhow::{bail, Context, Result};
 
@@ -18,7 +14,10 @@ impl GitRepo {
     pub fn ensure_repository(&self) -> Result<()> {
         let output = self.git(["rev-parse", "--show-toplevel"])?;
         if !output.status.success() {
-            bail!("workspace is not a git repository: {}", output.stderr.trim());
+            bail!(
+                "workspace is not a git repository: {}",
+                output.stderr.trim()
+            );
         }
         Ok(())
     }
