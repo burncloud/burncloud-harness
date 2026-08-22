@@ -285,10 +285,7 @@ mod tests {
             .iter()
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec!["rustfmt", "router-check", "billing-invariants"]
-        );
+        assert_eq!(names, vec!["rustfmt", "router-check", "billing-invariants"]);
     }
 
     #[test]
