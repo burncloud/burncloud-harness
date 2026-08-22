@@ -28,9 +28,26 @@ Important properties:
 - derives mandatory checks from BurnCloud paths and active invariants,
 - records failures as machine-readable classes in append-only trajectories,
 - correlates those failures with BurnCloud task areas and actual changed-code domains,
-- analyzes trajectories without automatically changing protected policy.
+- turns repeated hotspots into read-only, evidence-backed Harness improvement proposals,
+- never lets trajectory analysis mutate protected policy automatically.
 
 No graph engine, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
+
+## Usage
+
+```bash
+cargo run -- doctor ../burncloud
+cargo run -- explain --task examples/router-task.yaml
+cargo run -- run --task examples/router-task.yaml
+cargo run -- analyze ../burncloud --limit 100
+cargo run -- recommend ../burncloud --limit 100 --min-count 3
+```
+
+`explain` is read-only and shows task-router starting points, candidate invariants, and declared scope before code editing begins.
+
+`analyze` is read-only and reports run outcomes, structured failure classes, invariant/risk/check signals, and BurnCloud area/domain hotspots.
+
+`recommend` is also read-only. It converts repeated area/domain failure hotspots into explicit improvement proposals with the supporting count. It cannot change prompts, permissions, invariant mappings, tests, or protected policy.
 
 ## Example task
 
@@ -61,19 +78,6 @@ extra_checks: []
 
 If source evidence shows that the root cause crosses the allowlist, the agent must report `NEED_SCOPE_EXPANSION` rather than silently widening the change.
 
-## Usage
-
-```bash
-cargo run -- doctor ../burncloud
-cargo run -- explain --task examples/router-task.yaml
-cargo run -- run --task examples/router-task.yaml
-cargo run -- analyze ../burncloud --limit 100
-```
-
-`explain` is read-only and shows task-router starting points, candidate invariants, and declared scope before code editing begins.
-
-`analyze` is also read-only. It summarizes recent trajectories and never changes harness policy.
-
 ## Post-change invariant control
 
 Pre-change routing is only a prediction. After the agent edits code, actual changed paths are stronger evidence.
@@ -92,19 +96,19 @@ Lower-confidence findings force one explicit review pass before verification. Cu
 
 ## Structured failure taxonomy
 
-Retry feedback is useful to the agent, but free-form text is poor data for Harness evolution. Every failure emits a separate `failure_recorded` trajectory event with a stable class:
+Every failure emits a machine-readable `failure_recorded` trajectory event. Current classes are:
 
-- `agent_command` — the coding agent process failed,
-- `git_history` — the agent changed HEAD or repository history,
-- `scope_violation` — the actual diff escaped the declared allowlist,
-- `invariant_expansion` — the actual diff introduced invariant impact not present in the pre-change contract,
-- `no_change` — the agent completed without producing the required repository change,
-- `risk_block` — deterministic final-diff policy found a blocking regression pattern,
-- `risk_review` — the diff requires one explicit semantic review pass,
-- `verification` — a mandatory BurnCloud check or invariant suite failed,
-- `max_loops` — the task exhausted its bounded retry budget.
+- `agent_command`
+- `git_history`
+- `scope_violation`
+- `invariant_expansion`
+- `no_change`
+- `risk_block`
+- `risk_review`
+- `verification`
+- `max_loops`
 
-Natural-language feedback remains available to the next agent attempt, but analysis no longer has to infer the reason for failure from prose.
+Natural-language feedback remains available to the next agent attempt, but Harness evolution no longer has to infer failure causes from prose.
 
 ## BurnCloud-aware verification
 
@@ -121,21 +125,9 @@ Task-specific checks may be added, but built-in BurnCloud checks cannot be disab
 
 ## Trajectory analysis and hotspots
 
-Each run records task routing, invariant selection/expansion, actual changed paths, structured failure classes, risk findings, verification results, retry feedback, and final outcome.
-
-`analyze` now reports not only how often a failure class occurs, but also where it occurs:
-
-- `Failure hotspots by area` correlates the declared BurnCloud task area with failure class.
-- `Failure hotspots by changed domain` correlates the actual diff domain with failure class.
-
-Changed paths are collapsed into stable BurnCloud domains such as `router`, `server`, `client`, `database/router`, `database/billing`, `service/billing`, `service/channel`, `service/user`, `service/router-log`, `integration-tests`, `agent-docs`, and `workspace`. A failure touching several domains is counted once for each affected domain, not once per file.
-
-Example shape:
+`analyze` reports not only how often a failure occurs, but where it occurs:
 
 ```text
-BurnCloud Harness Trajectory Analysis
-runs=42 pass=35 fail=7 incomplete=0 success_rate=83.3% avg_attempts=2.10
-
 Failure classes:
 - 9x verification
 - 5x invariant_expansion
@@ -147,19 +139,39 @@ Failure hotspots by area:
 Failure hotspots by changed domain:
 - 6x router / verification
 - 4x database/router / invariant_expansion
-
-Invariant expansions:
-- 8x INV-BILLING-001
 ```
 
-The analyzer clears changed-path context at the start of every attempt so a failure that happens before a new diff is observed cannot be incorrectly attributed to the previous attempt's files.
+Changed paths are collapsed into stable BurnCloud domains such as `router`, `server`, `client`, `database/router`, `database/billing`, `service/billing`, `service/channel`, `service/user`, `service/router-log`, `integration-tests`, `agent-docs`, and `workspace`. A failure touching several domains is counted once for each affected domain, not once per file.
 
-The analyzer intentionally stops at evidence. Repetition is input to a human/harness-engineering decision; it is **not** permission for the worker agent to rewrite its own security policy.
+## Evidence-backed proposals
+
+`recommend` applies a minimum evidence threshold to the hotspot data. A proposal includes:
+
+- priority,
+- Harness layer that should be reviewed,
+- whether the evidence came from task area or actual changed domain,
+- hotspot context,
+- failure class,
+- occurrence count,
+- a conservative suggested change.
+
+Example:
+
+```text
+BurnCloud Harness Improvement Proposals
+evidence_threshold=3 policy_mutation=disabled
+
+1. [medium] Verification
+   evidence: area / router -> 7x verification
+   proposal: Move the most relevant BurnCloud check earlier for this hotspot or add a cheaper targeted preflight, while keeping the final invariant gate authoritative.
+```
+
+Recommendations are deliberately asymmetric: repeated `risk_block`, `scope_violation`, or `git_history` failures do **not** produce suggestions to weaken the guardrail. They recommend improving guidance/capability boundaries while preserving the hard block.
 
 ## Evolution rule
 
 A useful BurnCloud failure should move through this ladder only when evidence supports it:
 
-`structured failure -> repeated hotspot -> human review -> stronger routing/invariant/check/risk rule -> regression verification`
+`structured failure -> repeated hotspot -> evidence-backed proposal -> human approval -> stronger routing/invariant/check/risk rule -> regression verification`
 
-The next useful layer is an evidence-backed proposal report: turn repeated hotspots into explicit suggested Harness changes with supporting counts, while still requiring human approval before any policy mutation.
+The worker agent still cannot rewrite the rules that control itself. The next step after this layer should be a human-approved proposal application workflow with explicit before/after regression evidence, not autonomous policy mutation.
