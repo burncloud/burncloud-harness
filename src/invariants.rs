@@ -115,19 +115,39 @@ fn relevant_prefixes(
             .join(" ")
     );
 
-    if contains_any(&context, &["billing", "quota", "settlement", "spend", "cost", "usage"]) {
+    if contains_any(
+        &context,
+        &["billing", "quota", "settlement", "spend", "cost", "usage"],
+    ) {
         prefixes.insert("INV-BILLING-");
     }
-    if contains_any(&context, &["auth", "jwt", "credential", "token", "password", "admin"]) {
+    if contains_any(
+        &context,
+        &["auth", "jwt", "credential", "token", "password", "admin"],
+    ) {
         prefixes.insert("INV-AUTH-");
     }
-    if contains_any(&context, &["internal", "circuit-breaker", "price sync", "prices sync"]) {
+    if contains_any(
+        &context,
+        &["internal", "circuit-breaker", "price sync", "prices sync"],
+    ) {
         prefixes.insert("INV-INTERNAL-");
     }
-    if contains_any(&context, &["server startup", "create_app", "fallback service", "liveview"]) {
+    if contains_any(
+        &context,
+        &[
+            "server startup",
+            "create_app",
+            "fallback service",
+            "liveview",
+        ],
+    ) {
         prefixes.insert("INV-RUNTIME-");
     }
-    if contains_any(&context, &["database", "sql", "sqlite", "postgres", "placeholder"]) {
+    if contains_any(
+        &context,
+        &["database", "sql", "sqlite", "postgres", "placeholder"],
+    ) {
         prefixes.insert("INV-DB-");
     }
     if contains_any(&context, &["workspace", "dependency", "cargo", "clippy"]) {
