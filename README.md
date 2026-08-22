@@ -27,7 +27,8 @@ Important properties:
 - blocks high-confidence risk patterns and forces review for suspicious semantic weakening,
 - derives mandatory checks from BurnCloud paths and active invariants,
 - records failures as machine-readable classes in append-only trajectories,
-- analyzes those trajectories without automatically changing protected policy.
+- correlates those failures with BurnCloud task areas and actual changed-code domains,
+- analyzes trajectories without automatically changing protected policy.
 
 No graph engine, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
 
@@ -69,13 +70,13 @@ cargo run -- run --task examples/router-task.yaml
 cargo run -- analyze ../burncloud --limit 100
 ```
 
-`explain` is read-only and shows the task-router starting points, candidate invariants, and declared scope before code editing begins.
+`explain` is read-only and shows task-router starting points, candidate invariants, and declared scope before code editing begins.
 
 `analyze` is also read-only. It summarizes recent trajectories and never changes harness policy.
 
 ## Post-change invariant control
 
-Pre-change routing is only a prediction. After the agent edits code, the actual changed paths are stronger evidence.
+Pre-change routing is only a prediction. After the agent edits code, actual changed paths are stronger evidence.
 
 For example, a router task may begin with only `INV-ROUTER-*`. If the final diff touches `crates/router/src/lib.rs`, the harness also treats `INV-BILLING-*` as impacted, forces another review attempt with those invariants visible, and then requires the billing/quota invariant suite before PASS.
 
@@ -91,7 +92,7 @@ Lower-confidence findings force one explicit review pass before verification. Cu
 
 ## Structured failure taxonomy
 
-Retry feedback is useful to the agent, but free-form text is poor data for Harness evolution. Every failure now emits a separate `failure_recorded` trajectory event with a stable class:
+Retry feedback is useful to the agent, but free-form text is poor data for Harness evolution. Every failure emits a separate `failure_recorded` trajectory event with a stable class:
 
 - `agent_command` — the coding agent process failed,
 - `git_history` — the agent changed HEAD or repository history,
@@ -103,7 +104,7 @@ Retry feedback is useful to the agent, but free-form text is poor data for Harne
 - `verification` — a mandatory BurnCloud check or invariant suite failed,
 - `max_loops` — the task exhausted its bounded retry budget.
 
-The natural-language feedback remains available to the next agent attempt, but analysis no longer has to guess the reason for failure from prose.
+Natural-language feedback remains available to the next agent attempt, but analysis no longer has to infer the reason for failure from prose.
 
 ## BurnCloud-aware verification
 
@@ -118,11 +119,16 @@ Verification is driven by changed paths plus active invariant IDs. Examples incl
 
 Task-specific checks may be added, but built-in BurnCloud checks cannot be disabled by the task file.
 
-## Trajectory analysis
+## Trajectory analysis and hotspots
 
 Each run records task routing, invariant selection/expansion, actual changed paths, structured failure classes, risk findings, verification results, retry feedback, and final outcome.
 
-`analyze` reads the latest JSONL runs and reports pass/fail/incomplete runs, success rate, average attempts, task areas, failure classes, invariant expansions, risk codes, failed verification gates, scope-violation paths, and repeated signals occurring at least three times.
+`analyze` now reports not only how often a failure class occurs, but also where it occurs:
+
+- `Failure hotspots by area` correlates the declared BurnCloud task area with failure class.
+- `Failure hotspots by changed domain` correlates the actual diff domain with failure class.
+
+Changed paths are collapsed into stable BurnCloud domains such as `router`, `server`, `client`, `database/router`, `database/billing`, `service/billing`, `service/channel`, `service/user`, `service/router-log`, `integration-tests`, `agent-docs`, and `workspace`. A failure touching several domains is counted once for each affected domain, not once per file.
 
 Example shape:
 
@@ -133,14 +139,20 @@ runs=42 pass=35 fail=7 incomplete=0 success_rate=83.3% avg_attempts=2.10
 Failure classes:
 - 9x verification
 - 5x invariant_expansion
-- 3x risk_review
+
+Failure hotspots by area:
+- 7x router / verification
+- 3x auth / risk_review
+
+Failure hotspots by changed domain:
+- 6x router / verification
+- 4x database/router / invariant_expansion
 
 Invariant expansions:
 - 8x INV-BILLING-001
-
-Failed verification gates:
-- 6x billing-invariants
 ```
+
+The analyzer clears changed-path context at the start of every attempt so a failure that happens before a new diff is observed cannot be incorrectly attributed to the previous attempt's files.
 
 The analyzer intentionally stops at evidence. Repetition is input to a human/harness-engineering decision; it is **not** permission for the worker agent to rewrite its own security policy.
 
@@ -148,6 +160,6 @@ The analyzer intentionally stops at evidence. Repetition is input to a human/har
 
 A useful BurnCloud failure should move through this ladder only when evidence supports it:
 
-`structured failure -> repeated pattern -> human review -> stronger routing/invariant/check/risk rule -> regression verification`
+`structured failure -> repeated hotspot -> human review -> stronger routing/invariant/check/risk rule -> regression verification`
 
-The next useful layer is associating repeated failure classes with task areas and changed paths so we can tell **where** a Harness weakness lives, not merely how often it occurs.
+The next useful layer is an evidence-backed proposal report: turn repeated hotspots into explicit suggested Harness changes with supporting counts, while still requiring human approval before any policy mutation.
