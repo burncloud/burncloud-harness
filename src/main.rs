@@ -2,8 +2,10 @@ mod analysis;
 mod burncloud;
 mod checks;
 mod config;
+mod console;
 mod git;
 mod invariants;
+mod observer;
 mod policy;
 mod proposal;
 mod risk;
@@ -57,6 +59,9 @@ enum Commands {
     Run {
         #[arg(short, long)]
         task: PathBuf,
+        /// Show the Harness boundaries and evidence-driven Loop in a Ratatui console.
+        #[arg(long)]
+        tui: bool,
     },
 }
 
@@ -80,9 +85,13 @@ fn main() -> Result<()> {
             limit,
             min_count,
         } => recommend_workspace(workspace, limit, min_count)?,
-        Commands::Run { task } => {
+        Commands::Run { task, tui } => {
             let task = TaskSpec::load(task)?;
-            let summary = runner::run(task)?;
+            let summary = if tui {
+                console::run(task)?
+            } else {
+                runner::run(task)?
+            };
             println!("PASS run={} attempts={}", summary.run_id, summary.attempts);
             println!("changed={}", summary.changed_paths.join(", "));
             println!("trajectory={}", summary.trajectory_path.display());
