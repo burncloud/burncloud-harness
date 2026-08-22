@@ -221,9 +221,8 @@ fn run_agent(workspace: &std::path::Path, task: &TaskSpec, prompt: &str) -> Resu
 }
 
 fn adds_ignored_test(diff: &str) -> bool {
-    diff.lines().any(|line| {
-        line.starts_with('+') && !line.starts_with("+++") && line.contains("#[ignore]")
-    })
+    diff.lines()
+        .any(|line| line.starts_with('+') && !line.starts_with("+++") && line.contains("#[ignore]"))
 }
 
 fn compact_failure(primary: &str, fallback: &str) -> String {
@@ -248,6 +247,8 @@ mod tests {
     #[test]
     fn detects_new_ignore_attribute() {
         assert!(adds_ignored_test("+    #[ignore]\n+    fn regression() {}"));
-        assert!(!adds_ignored_test("-    #[ignore]\n+    fn regression() {}"));
+        assert!(!adds_ignored_test(
+            "-    #[ignore]\n+    fn regression() {}"
+        ));
     }
 }
