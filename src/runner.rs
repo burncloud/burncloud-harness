@@ -9,8 +9,7 @@ use crate::{
     git::GitRepo,
     invariants,
     policy::ScopePolicy,
-    risk,
-    route,
+    risk, route,
     trajectory::{new_run_id, Event, TrajectoryWriter},
 };
 
