@@ -82,6 +82,16 @@ impl GitRepo {
         Ok(diff)
     }
 
+    pub fn diff_fingerprint(&self) -> Result<String> {
+        let diff = self.diff()?;
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in diff.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        Ok(format!("fnv1a64:{hash:016x}"))
+    }
+
     pub fn harness_state_dir(&self) -> Result<PathBuf> {
         let output = self.git(["rev-parse", "--git-dir"])?;
         if !output.status.success() {
