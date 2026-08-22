@@ -40,8 +40,8 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Doctor { workspace } => {
             let workspace = workspace.canonicalize()?;
-            burncloud::BurncloudRepo::open(&workspace)?;
-            git::GitRepo::new(&workspace).ensure_repository()?;
+            burncloud::BurncloudRepo::open(workspace.as_path())?;
+            git::GitRepo::new(workspace.as_path()).ensure_repository()?;
             println!("BurnCloud harness preflight passed: {}", workspace.display());
         }
         Commands::Run { task } => {
