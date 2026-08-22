@@ -30,10 +30,10 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
     git.ensure_clean()?;
 
     let routes = route::resolve(burncloud.root(), &task.goal, task.area)?;
-    let selected_invariants =
+    let mut active_invariants =
         invariants::resolve(burncloud.root(), task.area, &task.goal, &routes)?;
     let route_labels = routes.labels();
-    let invariant_ids = selected_invariants.ids();
+    let initial_invariant_ids = active_invariants.ids();
 
     let baseline_head = git.head_sha()?;
     let scope = ScopePolicy::compile(&task.scope)?;
@@ -51,7 +51,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         routes: &route_labels,
     })?;
     trajectory.record(Event::InvariantsSelected {
-        invariants: &invariant_ids,
+        invariants: &initial_invariant_ids,
     })?;
 
     let mut previous_feedback: Option<String> = None;
@@ -61,7 +61,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         let prompt = burncloud.control_prompt(
             &task,
             &routes,
-            &selected_invariants,
+            &active_invariants,
             attempt,
             previous_feedback.as_deref(),
         );
@@ -116,6 +116,44 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             );
         }
 
+        if !changed_paths.is_empty() {
+            let impact = invariants::assess_changed_paths(
+                burncloud.root(),
+                &changed_paths,
+                &active_invariants,
+            )?;
+            let required_ids = impact.required.ids();
+            let newly_required_ids = impact.newly_required.ids();
+            trajectory.record(Event::InvariantImpactAssessed {
+                attempt,
+                required: &required_ids,
+                newly_required: &newly_required_ids,
+                reasons: &impact.reasons,
+            })?;
+
+            if !impact.newly_required.is_empty() {
+                active_invariants.merge(&impact.newly_required);
+                let mut feedback = format!(
+                    "The actual BurnCloud diff expanded invariant impact beyond the pre-change contract. Before completion, re-read and verify these newly required invariants against current source: {}.\nImpact evidence:\n{}\nDo not widen scope unless source evidence requires NEED_SCOPE_EXPANSION.",
+                    newly_required_ids.join(", "),
+                    impact.reasons.join("\n")
+                );
+                if !agent_result.success {
+                    feedback.push_str(&format!(
+                        "\nThe agent command also failed with exit code {:?}:\n{}",
+                        agent_result.exit_code,
+                        compact_failure(&agent_result.stderr, &agent_result.stdout)
+                    ));
+                }
+                trajectory.record(Event::AttemptFailed {
+                    attempt,
+                    feedback: &feedback,
+                })?;
+                previous_feedback = Some(feedback);
+                continue;
+            }
+        }
+
         if !agent_result.success {
             let feedback = format!(
                 "Agent command failed with exit code {:?}.\n{}",
@@ -150,7 +188,12 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             bail!("diff adds #[ignore] to a test; burncloud-harness refuses test weakening");
         }
 
-        let checks = plan_checks(&changed_paths, &task.extra_checks);
+        let active_invariant_ids = active_invariants.ids();
+        let checks = plan_checks(
+            &changed_paths,
+            &active_invariant_ids,
+            &task.extra_checks,
+        );
         let mut failed = Vec::new();
 
         for check in checks {
