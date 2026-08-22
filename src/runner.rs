@@ -7,7 +7,9 @@ use crate::{
     checks::{plan_checks, run_check},
     config::TaskSpec,
     git::GitRepo,
+    invariants,
     policy::ScopePolicy,
+    route,
     trajectory::{new_run_id, Event, TrajectoryWriter},
 };
 
@@ -27,6 +29,12 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
     git.ensure_repository()?;
     git.ensure_clean()?;
 
+    let routes = route::resolve(burncloud.root(), &task.goal, task.area)?;
+    let selected_invariants =
+        invariants::resolve(burncloud.root(), task.area, &task.goal, &routes)?;
+    let route_labels = routes.labels();
+    let invariant_ids = selected_invariants.ids();
+
     let baseline_head = git.head_sha()?;
     let scope = ScopePolicy::compile(&task.scope)?;
     let run_id = new_run_id();
@@ -39,12 +47,24 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         area: task.area.as_str(),
         max_loops: task.max_loops,
     })?;
+    trajectory.record(Event::TaskRouted {
+        routes: &route_labels,
+    })?;
+    trajectory.record(Event::InvariantsSelected {
+        invariants: &invariant_ids,
+    })?;
 
     let mut previous_feedback: Option<String> = None;
 
     for attempt in 1..=task.max_loops {
         trajectory.record(Event::AttemptStarted { attempt })?;
-        let prompt = burncloud.control_prompt(&task, attempt, previous_feedback.as_deref());
+        let prompt = burncloud.control_prompt(
+            &task,
+            &routes,
+            &selected_invariants,
+            attempt,
+            previous_feedback.as_deref(),
+        );
         let agent_result = run_agent(&workspace, &task, &prompt)?;
         trajectory.record(Event::AgentFinished {
             attempt,
