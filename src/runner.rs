@@ -22,7 +22,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
     let workspace = PathBuf::from(&task.workspace)
         .canonicalize()
         .with_context(|| format!("failed to resolve workspace {}", task.workspace))?;
-    let burncloud = BurncloudRepo::open(&workspace)?;
+    let burncloud = BurncloudRepo::open(workspace.as_path())?;
     let git = GitRepo::new(burncloud.root());
     git.ensure_repository()?;
     git.ensure_clean()?;
@@ -76,20 +76,6 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             );
         }
 
-        if !agent_result.success {
-            let feedback = format!(
-                "Agent command failed with exit code {:?}.\n{}",
-                agent_result.exit_code,
-                compact_failure(&agent_result.stderr, &agent_result.stdout)
-            );
-            trajectory.record(Event::AttemptFailed {
-                attempt,
-                feedback: &feedback,
-            })?;
-            previous_feedback = Some(feedback);
-            continue;
-        }
-
         let changed_paths = git.changed_paths()?;
         let report = scope.evaluate(&changed_paths);
         trajectory.record(Event::ScopeEvaluated {
@@ -108,6 +94,20 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 "scope violation; refusing to continue because unauthorized changes already exist: {}",
                 report.violations.join(", ")
             );
+        }
+
+        if !agent_result.success {
+            let feedback = format!(
+                "Agent command failed with exit code {:?}.\n{}",
+                agent_result.exit_code,
+                compact_failure(&agent_result.stderr, &agent_result.stdout)
+            );
+            trajectory.record(Event::AttemptFailed {
+                attempt,
+                feedback: &feedback,
+            })?;
+            previous_feedback = Some(feedback);
+            continue;
         }
 
         if changed_paths.is_empty() {
