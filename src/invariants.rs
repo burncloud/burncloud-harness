@@ -6,7 +6,7 @@ use crate::{config::BurncloudArea, route::RouteSelection};
 
 const INVARIANTS_PATH: &str = "docs/agent/INVARIANTS.md";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invariant {
     pub id: String,
     pub title: String,
@@ -17,9 +17,36 @@ pub struct InvariantSelection {
     pub items: Vec<Invariant>,
 }
 
+#[derive(Debug, Clone)]
+pub struct InvariantImpact {
+    pub required: InvariantSelection,
+    pub newly_required: InvariantSelection,
+    pub reasons: Vec<String>,
+}
+
 impl InvariantSelection {
     pub fn ids(&self) -> Vec<String> {
         self.items.iter().map(|item| item.id.clone()).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn merge(&mut self, other: &InvariantSelection) {
+        let mut seen = self
+            .items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<BTreeSet<_>>();
+
+        for item in &other.items {
+            if seen.insert(item.id.clone()) {
+                self.items.push(item.clone());
+            }
+        }
+
+        self.items.sort_by(|left, right| left.id.cmp(&right.id));
     }
 
     pub fn prompt_text(&self) -> String {
@@ -41,18 +68,156 @@ pub fn resolve(
     goal: &str,
     routes: &RouteSelection,
 ) -> Result<InvariantSelection> {
+    let catalog = load_catalog(root)?;
+    let prefixes = relevant_prefixes(area, goal, routes);
+    Ok(select_by_prefixes(catalog, &prefixes))
+}
+
+pub fn assess_changed_paths(
+    root: &Path,
+    changed_paths: &[String],
+    selected: &InvariantSelection,
+) -> Result<InvariantImpact> {
+    let catalog = load_catalog(root)?;
+    let mut prefixes = BTreeSet::new();
+    let mut reasons = Vec::new();
+
+    for path in changed_paths {
+        for (prefix, reason) in invariant_families_for_path(path) {
+            prefixes.insert(prefix);
+            reasons.push(format!("{path}: {reason}"));
+        }
+    }
+
+    reasons.sort();
+    reasons.dedup();
+
+    let required = select_by_prefixes(catalog, &prefixes);
+    let selected_ids = selected.ids().into_iter().collect::<BTreeSet<_>>();
+    let newly_required = InvariantSelection {
+        items: required
+            .items
+            .iter()
+            .filter(|item| !selected_ids.contains(&item.id))
+            .cloned()
+            .collect(),
+    };
+
+    Ok(InvariantImpact {
+        required,
+        newly_required,
+        reasons,
+    })
+}
+
+fn load_catalog(root: &Path) -> Result<Vec<Invariant>> {
     let path = root.join(INVARIANTS_PATH);
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("failed to read BurnCloud invariants {}", path.display()))?;
-    let catalog = parse_invariants(&raw);
-    let prefixes = relevant_prefixes(area, goal, routes);
+    Ok(parse_invariants(&raw))
+}
 
-    Ok(InvariantSelection {
+fn select_by_prefixes(
+    catalog: Vec<Invariant>,
+    prefixes: &BTreeSet<&'static str>,
+) -> InvariantSelection {
+    InvariantSelection {
         items: catalog
             .into_iter()
             .filter(|item| prefixes.iter().any(|prefix| item.id.starts_with(prefix)))
             .collect(),
-    })
+    }
+}
+
+fn invariant_families_for_path(path: &str) -> Vec<(&'static str, &'static str)> {
+    let mut families = Vec::new();
+
+    if path == "src/main.rs" {
+        families.push((
+            "INV-RUNTIME-",
+            "root command dispatch participates in BurnCloud runtime startup",
+        ));
+    }
+
+    if path == "crates/server/src/lib.rs" {
+        families.push((
+            "INV-RUNTIME-",
+            "server app composition defines runtime route ordering and fallback behavior",
+        ));
+        families.push((
+            "INV-ROUTER-",
+            "server composition controls how router routes and fallback are mounted",
+        ));
+        families.push((
+            "INV-AUTH-",
+            "server composition applies the security boundary across management and data plane",
+        ));
+    }
+
+    if path.starts_with("crates/server/src/api/") {
+        families.push((
+            "INV-AUTH-",
+            "management API routes participate in authentication or authorization boundaries",
+        ));
+    }
+
+    if path == "crates/server/src/api/auth.rs" {
+        families.push((
+            "INV-INTERNAL-",
+            "security boundary middleware protects sensitive internal control-plane mutations",
+        ));
+    }
+
+    if path == "crates/server/tests/security_invariants.rs" {
+        families.push((
+            "INV-AUTH-",
+            "security invariant tests are executable evidence for authentication boundaries",
+        ));
+        families.push((
+            "INV-INTERNAL-",
+            "security invariant tests cover internal-secret fail-closed behavior",
+        ));
+    }
+
+    if path.starts_with("crates/router/src/") {
+        families.push((
+            "INV-ROUTER-",
+            "router runtime source can alter data-plane routing or fallback semantics",
+        ));
+    }
+
+    if path == "crates/router/src/lib.rs" {
+        families.push((
+            "INV-BILLING-",
+            "router request lifecycle participates in credential-scoped usage settlement",
+        ));
+    }
+
+    if path == "crates/database/crates/router/src/token.rs"
+        || path == "crates/router/tests/billing_invariants.rs"
+        || path == "crates/router/tests/quota_tests.rs"
+    {
+        families.push((
+            "INV-BILLING-",
+            "path is direct evidence or implementation for quota and spend settlement invariants",
+        ));
+    }
+
+    if path == "crates/database/src/placeholder.rs" {
+        families.push((
+            "INV-DB-",
+            "placeholder abstraction is the cross-database SQL dialect boundary",
+        ));
+    }
+
+    if path == "Cargo.toml" || path == "Cargo.lock" {
+        families.push((
+            "INV-WORKSPACE-",
+            "root dependency graph participates in workspace dependency invariants",
+        ));
+    }
+
+    families
 }
 
 fn parse_invariants(markdown: &str) -> Vec<Invariant> {
@@ -167,17 +332,25 @@ mod tests {
     use crate::route::{RouteRow, RouteSelection};
 
     const DOC: &str = r#"
+### INV-RUNTIME-001 — Runtime startup remains unified
 ### INV-ROUTER-001 — Router fallback remains explicit
 ### INV-AUTH-001 — Auth boundary remains separate
+### INV-INTERNAL-001 — Internal mutations fail closed
 ### INV-BILLING-001 — Quota represents spend
+### INV-BILLING-002 — Settlement is credential scoped
 ### INV-DB-001 — Placeholder syntax is abstracted
+### INV-WORKSPACE-001 — Workspace dependencies are centralized
 "#;
+
+    fn catalog() -> Vec<Invariant> {
+        parse_invariants(DOC)
+    }
 
     #[test]
     fn parses_invariant_headings() {
-        let items = parse_invariants(DOC);
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0].id, "INV-ROUTER-001");
+        let items = catalog();
+        assert_eq!(items.len(), 8);
+        assert_eq!(items[0].id, "INV-RUNTIME-001");
     }
 
     #[test]
@@ -193,5 +366,37 @@ mod tests {
         let prefixes = relevant_prefixes(BurncloudArea::Router, "fix usage", &routes);
         assert!(prefixes.contains("INV-ROUTER-"));
         assert!(prefixes.contains("INV-BILLING-"));
+    }
+
+    #[test]
+    fn router_lib_implies_router_and_billing_families() {
+        let families = invariant_families_for_path("crates/router/src/lib.rs")
+            .into_iter()
+            .map(|(family, _)| family)
+            .collect::<BTreeSet<_>>();
+        assert!(families.contains("INV-ROUTER-"));
+        assert!(families.contains("INV-BILLING-"));
+    }
+
+    #[test]
+    fn auth_middleware_implies_auth_and_internal_families() {
+        let families = invariant_families_for_path("crates/server/src/api/auth.rs")
+            .into_iter()
+            .map(|(family, _)| family)
+            .collect::<BTreeSet<_>>();
+        assert!(families.contains("INV-AUTH-"));
+        assert!(families.contains("INV-INTERNAL-"));
+    }
+
+    #[test]
+    fn merge_deduplicates_invariant_ids() {
+        let mut selected = InvariantSelection {
+            items: vec![catalog()[1].clone()],
+        };
+        let incoming = InvariantSelection {
+            items: vec![catalog()[1].clone(), catalog()[4].clone()],
+        };
+        selected.merge(&incoming);
+        assert_eq!(selected.ids(), vec!["INV-BILLING-001", "INV-ROUTER-001"]);
     }
 }
