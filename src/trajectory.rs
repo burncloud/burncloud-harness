@@ -172,13 +172,15 @@ fn load_resume_provenance(path: &Path) -> Result<Option<ResumeProvenance>> {
     let mut finished = false;
 
     for line in reader.lines() {
-        let line =
-            line.with_context(|| format!("failed to read trajectory {}", path.display()))?;
+        let line = line.with_context(|| format!("failed to read trajectory {}", path.display()))?;
         let value: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(_) => return Ok(None),
         };
-        let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+        let event_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
 
         match event_type {
             "run_started" => {
