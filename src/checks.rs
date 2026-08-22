@@ -38,19 +38,18 @@ pub fn plan_checks(
         .collect::<Vec<_>>();
     if !changed_rust_paths.is_empty() {
         let mut argv = vec![
-            "git".to_owned(),
-            "diff".to_owned(),
+            "rustfmt".to_owned(),
+            "--edition".to_owned(),
+            "2021".to_owned(),
             "--check".to_owned(),
-            "HEAD".to_owned(),
-            "--".to_owned(),
         ];
         argv.extend(changed_rust_paths);
         push_unique_argv(
             &mut checks,
             &mut seen,
-            "format",
+            "rustfmt",
             argv,
-            "check changed Rust lines without inheriting baseline formatting failures",
+            "changed Rust files must satisfy rustfmt without inheriting unrelated baseline formatting failures",
         );
     }
 
@@ -107,8 +106,8 @@ pub fn plan_checks(
         ),
         (
             "crates/client/",
-            "client-check",
-            "cargo check -p burncloud-client",
+            "client-web-check",
+            "cargo check -p burncloud-client --no-default-features --features web",
         ),
     ];
 
@@ -119,7 +118,7 @@ pub fn plan_checks(
                 &mut seen,
                 name,
                 command,
-                "affected BurnCloud package must compile",
+                "affected BurnCloud package must compile in the task-relevant feature mode",
             );
         }
     }
@@ -286,11 +285,14 @@ mod tests {
             .iter()
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["format", "router-check", "billing-invariants"]);
+        assert_eq!(
+            names,
+            vec!["rustfmt", "router-check", "billing-invariants"]
+        );
     }
 
     #[test]
-    fn format_check_is_scoped_to_changed_rust_lines_without_a_shell() {
+    fn rustfmt_check_is_scoped_to_changed_rust_files_without_a_shell() {
         let checks = plan_checks(
             &[
                 "crates/client/src/critical_pages/buyer_overview.rs".into(),
@@ -300,20 +302,22 @@ mod tests {
             &[],
         );
 
-        assert_eq!(checks[0].name, "format");
+        assert_eq!(checks[0].name, "rustfmt");
         assert_eq!(
             checks[0].argv.as_ref().unwrap(),
             &vec![
-                "git".to_owned(),
-                "diff".to_owned(),
+                "rustfmt".to_owned(),
+                "--edition".to_owned(),
+                "2021".to_owned(),
                 "--check".to_owned(),
-                "HEAD".to_owned(),
-                "--".to_owned(),
                 "crates/client/src/critical_pages/buyer_overview.rs".to_owned(),
             ]
         );
-        assert_eq!(checks[1].name, "client-check");
-        assert_eq!(checks[1].command, "cargo check -p burncloud-client");
+        assert_eq!(checks[1].name, "client-web-check");
+        assert_eq!(
+            checks[1].command,
+            "cargo check -p burncloud-client --no-default-features --features web"
+        );
     }
 
     #[test]
