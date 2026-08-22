@@ -1,47 +1,50 @@
 use serde::Serialize;
 
 /// Events are append-only facts produced during a harness run.
-/// TUI and future analysis layers should consume events instead of owning state.
+/// TUI and analysis layers consume events instead of owning state.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HarnessEvent {
     TaskStarted {
+        run_id: String,
         task: String,
+        area: String,
     },
     ContractLoaded {
-        area: String,
+        allowed_scope: Vec<String>,
+        avoid_scope: Vec<String>,
+        max_loops: u32,
     },
     RouteSelected {
         routes: Vec<String>,
     },
-    InvariantsSelected {
+    InvariantSelected {
         invariants: Vec<String>,
     },
     LoopStarted {
         attempt: u32,
     },
     AgentStarted {
+        agent: String,
         attempt: u32,
-        program: String,
     },
     AgentFinished {
-        attempt: u32,
         success: bool,
+        exit_code: Option<i32>,
+        attempt: u32,
     },
     DiffDetected {
-        attempt: u32,
-        paths: Vec<String>,
+        changed_files: Vec<String>,
     },
     VerificationStarted {
-        attempt: u32,
         check: String,
     },
     VerificationFinished {
-        attempt: u32,
         check: String,
         success: bool,
     },
     TaskFinished {
         success: bool,
+        attempts: u32,
     },
 }
