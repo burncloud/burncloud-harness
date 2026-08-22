@@ -59,15 +59,15 @@ pub fn resolve(root: &Path, goal: &str, area: BurncloudArea) -> Result<RouteSele
 }
 
 fn parse_rows(markdown: &str) -> Vec<RouteRow> {
-    markdown
-        .lines()
-        .filter_map(parse_row)
-        .collect::<Vec<_>>()
+    markdown.lines().filter_map(parse_row).collect::<Vec<_>>()
 }
 
 fn parse_row(line: &str) -> Option<RouteRow> {
     let trimmed = line.trim();
-    if !trimmed.starts_with('|') || trimmed.contains("|---") || trimmed.contains("Task / user behavior") {
+    if !trimmed.starts_with('|')
+        || trimmed.contains("|---")
+        || trimmed.contains("Task / user behavior")
+    {
         return None;
     }
 
@@ -139,14 +139,7 @@ fn area_tokens(area: BurncloudArea) -> BTreeSet<String> {
             "streaming",
             "relay",
         ],
-        BurncloudArea::Billing => &[
-            "billing",
-            "cost",
-            "quota",
-            "usage",
-            "settlement",
-            "spend",
-        ],
+        BurncloudArea::Billing => &["billing", "cost", "quota", "usage", "settlement", "spend"],
         BurncloudArea::Auth => &[
             "auth",
             "authentication",
@@ -196,7 +189,10 @@ mod tests {
             BurncloudArea::Router,
         );
 
-        assert_eq!(selection.rows[0].behavior, "Provider passthrough / conversion / retry");
+        assert_eq!(
+            selection.rows[0].behavior,
+            "Provider passthrough / conversion / retry"
+        );
     }
 
     #[test]
