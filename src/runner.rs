@@ -10,7 +10,7 @@ use crate::{
     invariants,
     policy::ScopePolicy,
     risk, route,
-    trajectory::{new_run_id, Event, TrajectoryWriter},
+    trajectory::{new_run_id, Event, FailureClass, TrajectoryWriter},
 };
 
 pub struct RunSummary {
@@ -85,16 +85,17 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         })?;
         if !head_unchanged {
             let changed_paths = git.changed_paths()?;
+            let detail = format!(
+                "agent changed git HEAD from {} to {}; burncloud-harness forbids commits/history changes",
+                baseline_head, current_head
+            );
+            record_failure(&mut trajectory, attempt, FailureClass::GitHistory, &detail)?;
             trajectory.record(Event::RunFinished {
                 success: false,
                 attempts: attempt,
                 changed_paths: &changed_paths,
             })?;
-            bail!(
-                "agent changed git HEAD from {} to {}; burncloud-harness forbids commits/history changes",
-                baseline_head,
-                current_head
-            );
+            bail!("{detail}");
         }
 
         let changed_paths = git.changed_paths()?;
@@ -106,15 +107,22 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         })?;
 
         if !report.is_ok() {
+            let detail = format!(
+                "scope violation; unauthorized changes: {}",
+                report.violations.join(", ")
+            );
+            record_failure(
+                &mut trajectory,
+                attempt,
+                FailureClass::ScopeViolation,
+                &detail,
+            )?;
             trajectory.record(Event::RunFinished {
                 success: false,
                 attempts: attempt,
                 changed_paths: &changed_paths,
             })?;
-            bail!(
-                "scope violation; refusing to continue because unauthorized changes already exist: {}",
-                report.violations.join(", ")
-            );
+            bail!("{detail}");
         }
 
         if !changed_paths.is_empty() {
@@ -146,10 +154,12 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                         compact_failure(&agent_result.stderr, &agent_result.stdout)
                     ));
                 }
-                trajectory.record(Event::AttemptFailed {
+                record_retry(
+                    &mut trajectory,
                     attempt,
-                    feedback: &feedback,
-                })?;
+                    FailureClass::InvariantExpansion,
+                    &feedback,
+                )?;
                 previous_feedback = Some(feedback);
                 continue;
             }
@@ -161,20 +171,19 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 agent_result.exit_code,
                 compact_failure(&agent_result.stderr, &agent_result.stdout)
             );
-            trajectory.record(Event::AttemptFailed {
+            record_retry(
+                &mut trajectory,
                 attempt,
-                feedback: &feedback,
-            })?;
+                FailureClass::AgentCommand,
+                &feedback,
+            )?;
             previous_feedback = Some(feedback);
             continue;
         }
 
         if changed_paths.is_empty() {
             let feedback = "No repository changes were produced. Re-check the goal and either make the smallest in-scope change or clearly report why no change is required.".to_owned();
-            trajectory.record(Event::AttemptFailed {
-                attempt,
-                feedback: &feedback,
-            })?;
+            record_retry(&mut trajectory, attempt, FailureClass::NoChange, &feedback)?;
             previous_feedback = Some(feedback);
             continue;
         }
@@ -197,10 +206,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
-            trajectory.record(Event::AttemptFailed {
-                attempt,
-                feedback: &feedback,
-            })?;
+            record_retry(&mut trajectory, attempt, FailureClass::RiskBlock, &feedback)?;
             previous_feedback = Some(feedback);
             continue;
         }
@@ -218,10 +224,12 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
-            trajectory.record(Event::AttemptFailed {
+            record_retry(
+                &mut trajectory,
                 attempt,
-                feedback: &feedback,
-            })?;
+                FailureClass::RiskReview,
+                &feedback,
+            )?;
             previous_feedback = Some(feedback);
             continue;
         }
@@ -271,24 +279,57 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             "BurnCloud mandatory verification failed. Fix the existing in-scope change; do not widen scope or weaken tests.\n{}",
             failed.join("\n")
         );
-        trajectory.record(Event::AttemptFailed {
+        record_retry(
+            &mut trajectory,
             attempt,
-            feedback: &feedback,
-        })?;
+            FailureClass::Verification,
+            &feedback,
+        )?;
         previous_feedback = Some(feedback);
     }
 
     let changed_paths = git.changed_paths()?;
+    let detail = format!(
+        "task did not pass burncloud-harness after {} attempts",
+        task.max_loops
+    );
+    record_failure(
+        &mut trajectory,
+        task.max_loops,
+        FailureClass::MaxLoops,
+        &detail,
+    )?;
     trajectory.record(Event::RunFinished {
         success: false,
         attempts: task.max_loops,
         changed_paths: &changed_paths,
     })?;
-    bail!(
-        "task did not pass burncloud-harness after {} attempts; trajectory: {}",
-        task.max_loops,
-        trajectory.path().display()
-    )
+    bail!("{detail}; trajectory: {}", trajectory.path().display())
+}
+
+fn record_retry(
+    trajectory: &mut TrajectoryWriter,
+    attempt: u32,
+    class: FailureClass,
+    feedback: &str,
+) -> Result<()> {
+    record_failure(trajectory, attempt, class, feedback)?;
+    trajectory.record(Event::AttemptFailed { attempt, feedback })?;
+    Ok(())
+}
+
+fn record_failure(
+    trajectory: &mut TrajectoryWriter,
+    attempt: u32,
+    class: FailureClass,
+    detail: &str,
+) -> Result<()> {
+    trajectory.record(Event::FailureRecorded {
+        attempt,
+        class,
+        detail,
+    })?;
+    Ok(())
 }
 
 struct AgentResult {

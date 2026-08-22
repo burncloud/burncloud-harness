@@ -18,6 +18,7 @@ pub struct AnalysisReport {
     pub scope_violation_events: usize,
     pub parse_errors: usize,
     pub areas: BTreeMap<String, usize>,
+    pub failure_classes: BTreeMap<String, usize>,
     pub scope_paths: BTreeMap<String, usize>,
     pub invariant_expansions: BTreeMap<String, usize>,
     pub risk_codes: BTreeMap<String, usize>,
@@ -60,6 +61,7 @@ impl AnalysisReport {
         ));
 
         append_ranked(&mut output, "Task areas", &self.areas);
+        append_ranked(&mut output, "Failure classes", &self.failure_classes);
         append_ranked(
             &mut output,
             "Invariant expansions",
@@ -88,6 +90,12 @@ impl AnalysisReport {
 
     fn repeated_signals(&self, threshold: usize) -> Vec<String> {
         let mut signals = Vec::new();
+        collect_repeated(
+            &mut signals,
+            "failure class",
+            &self.failure_classes,
+            threshold,
+        );
         collect_repeated(
             &mut signals,
             "invariant expansion",
@@ -170,6 +178,11 @@ fn apply_event(event: &Value, report: &mut AnalysisReport, finished: &mut bool) 
         Some("agent_finished") => {
             if event.get("success").and_then(Value::as_bool) == Some(false) {
                 report.agent_failures += 1;
+            }
+        }
+        Some("failure_recorded") => {
+            if let Some(class) = event.get("class").and_then(Value::as_str) {
+                increment(&mut report.failure_classes, class);
             }
         }
         Some("scope_evaluated") => {
@@ -286,6 +299,11 @@ mod tests {
             &mut finished,
         );
         apply_event(
+            &json!({"type":"failure_recorded","attempt":1,"class":"verification","detail":"billing failed"}),
+            &mut report,
+            &mut finished,
+        );
+        apply_event(
             &json!({"type":"invariant_impact_assessed","newly_required":["INV-BILLING-001"]}),
             &mut report,
             &mut finished,
@@ -308,6 +326,7 @@ mod tests {
 
         assert_eq!(report.areas["router"], 1);
         assert_eq!(report.attempts, 1);
+        assert_eq!(report.failure_classes["verification"], 1);
         assert_eq!(report.invariant_expansions["INV-BILLING-001"], 1);
         assert_eq!(report.risk_codes["ASSERTION_WEAKENING"], 1);
         assert_eq!(report.failed_checks["billing-invariants"], 1);
