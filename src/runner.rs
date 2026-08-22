@@ -11,7 +11,10 @@ use crate::{
     observer::{NoopObserver, RunEvent, RunObserver, RunPhase},
     policy::ScopePolicy,
     risk, route,
-    trajectory::{new_run_id, Event, FailureClass, TrajectoryWriter},
+    trajectory::{
+        load_resume_provenances, new_run_id, Event, FailureClass, ResumeProvenance,
+        TrajectoryWriter,
+    },
 };
 
 pub struct RunSummary {
@@ -56,23 +59,25 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
     let git = GitRepo::new(burncloud.root());
     git.ensure_repository()?;
     let scope = ScopePolicy::compile(&task.scope)?;
-    let resumed_paths = if resume_existing_changes {
-        let changed_paths = git.changed_paths()?;
-        if changed_paths.is_empty() {
-            bail!("--resume requires existing BurnCloud worktree changes");
-        }
-        let report = scope.evaluate(&changed_paths);
-        if !report.is_ok() {
-            bail!(
-                "cannot resume changes outside the task scope: {}",
-                report.violations.join(", ")
-            );
-        }
-        changed_paths
+    let state_dir = git.harness_state_dir()?;
+    let current_head = git.head_sha()?;
+
+    let resume_provenance = if resume_existing_changes {
+        Some(select_resume_provenance(
+            &task,
+            &git,
+            &scope,
+            &state_dir,
+            &current_head,
+        )?)
     } else {
         git.ensure_clean()?;
-        Vec::new()
+        None
     };
+    let resumed_paths = resume_provenance
+        .as_ref()
+        .map(|provenance| provenance.changed_paths.clone())
+        .unwrap_or_default();
 
     let routes = route::resolve(burncloud.root(), &task.goal, task.area)?;
     let mut active_invariants =
@@ -80,9 +85,11 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
     let route_labels = routes.labels();
     let initial_invariant_ids = active_invariants.ids();
 
-    let baseline_head = git.head_sha()?;
+    let baseline_head = current_head;
     let run_id = new_run_id();
-    let state_dir = git.harness_state_dir()?;
+    let resumed_from = resume_provenance
+        .as_ref()
+        .map(|provenance| provenance.run_id.as_str());
     let mut trajectory = TrajectoryWriter::create(&state_dir, &run_id)?;
     trajectory.record(Event::RunStarted {
         run_id: &run_id,
@@ -90,6 +97,14 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         goal: &task.goal,
         area: task.area.as_str(),
         max_loops: task.max_loops,
+        baseline_head: &baseline_head,
+        allowed: &task.scope.allowed,
+        avoid: &task.scope.avoid,
+        context_files: &task.context_files,
+        agent_program: &task.agent.program,
+        agent_args: &task.agent.args,
+        agent_append_prompt: task.agent.append_prompt,
+        resumed_from,
     })?;
     trajectory.record(Event::TaskRouted {
         routes: &route_labels,
@@ -108,14 +123,13 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         invariants: initial_invariant_ids.clone(),
     })?;
 
-    let mut previous_feedback = if resumed_paths.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "This run is explicitly resuming existing in-scope changes left by an interrupted Harness run. Inspect and continue or correct these paths; do not assume they are complete:\n- {}",
+    let mut previous_feedback = resume_provenance.as_ref().map(|provenance| {
+        format!(
+            "This run is resuming interrupted Harness run {}. The current Git HEAD, task contract, scope, agent configuration, changed paths, and exact diff fingerprint match the last recorded checkpoint. Inspect and continue or correct these paths; do not assume they are complete:\n- {}",
+            provenance.run_id,
             resumed_paths.join("\n- ")
-        ))
-    };
+        )
+    });
     let mut reviewed_risks = BTreeSet::new();
     let attempt_limit = if execute_agent { task.max_loops } else { 1 };
 
@@ -127,7 +141,8 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             detail: if execute_agent {
                 "Coding agent is executing inside the declared BurnCloud scope".into()
             } else {
-                "Operator requested deterministic verification of existing in-scope changes".into()
+                "Operator requested deterministic verification of provenance-matched resumed changes"
+                    .into()
             },
         })?;
 
@@ -144,7 +159,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             AgentResult {
                 success: true,
                 exit_code: Some(0),
-                stdout: "No agent command executed; verifying existing operator-approved in-scope changes."
+                stdout: "No agent command executed; verifying provenance-matched existing changes."
                     .to_owned(),
                 stderr: String::new(),
             }
@@ -199,10 +214,12 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
 
         let changed_paths = git.changed_paths()?;
         let report = scope.evaluate(&changed_paths);
+        let diff_fingerprint = git.diff_fingerprint()?;
         trajectory.record(Event::ScopeEvaluated {
             attempt,
             changed_paths: &changed_paths,
             violations: &report.violations,
+            diff_fingerprint: &diff_fingerprint,
         })?;
         observer.on_event(RunEvent::Paths {
             attempt,
@@ -489,6 +506,52 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         trajectory_path: trajectory.path().to_path_buf(),
     })?;
     bail!("{detail}; trajectory: {}", trajectory.path().display())
+}
+
+fn select_resume_provenance(
+    task: &TaskSpec,
+    git: &GitRepo,
+    scope: &ScopePolicy,
+    state_dir: &std::path::Path,
+    current_head: &str,
+) -> Result<ResumeProvenance> {
+    let changed_paths = git.changed_paths()?;
+    if changed_paths.is_empty() {
+        bail!("--resume requires existing BurnCloud worktree changes");
+    }
+
+    let report = scope.evaluate(&changed_paths);
+    if !report.is_ok() {
+        bail!(
+            "cannot resume changes outside the task scope: {}",
+            report.violations.join(", ")
+        );
+    }
+
+    let diff_fingerprint = git.diff_fingerprint()?;
+    let candidates = load_resume_provenances(state_dir)?;
+    let matching = candidates.into_iter().rev().find(|candidate| {
+        candidate.task == task.name
+            && candidate.goal == task.goal
+            && candidate.area == task.area.as_str()
+            && candidate.max_loops == task.max_loops
+            && candidate.baseline_head == current_head
+            && candidate.allowed == task.scope.allowed
+            && candidate.avoid == task.scope.avoid
+            && candidate.context_files == task.context_files
+            && candidate.agent_program == task.agent.program
+            && candidate.agent_args == task.agent.args
+            && candidate.agent_append_prompt == task.agent.append_prompt
+            && candidate.changed_paths == changed_paths
+            && candidate.diff_fingerprint == diff_fingerprint
+    });
+
+    matching.with_context(|| {
+        format!(
+            "cannot prove that the current dirty worktree belongs to an interrupted Harness run. --resume now fails closed unless a recorded checkpoint matches HEAD {}, the full task contract, changed paths, and diff fingerprint {}",
+            current_head, diff_fingerprint
+        )
+    })
 }
 
 fn record_retry<O: RunObserver + ?Sized>(
