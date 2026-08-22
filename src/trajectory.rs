@@ -22,6 +22,22 @@ pub enum FailureClass {
     MaxLoops,
 }
 
+impl FailureClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentCommand => "agent_command",
+            Self::GitHistory => "git_history",
+            Self::ScopeViolation => "scope_violation",
+            Self::InvariantExpansion => "invariant_expansion",
+            Self::NoChange => "no_change",
+            Self::RiskBlock => "risk_block",
+            Self::RiskReview => "risk_review",
+            Self::Verification => "verification",
+            Self::MaxLoops => "max_loops",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event<'a> {
