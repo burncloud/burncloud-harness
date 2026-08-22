@@ -15,6 +15,7 @@ pub enum Event<'a> {
         run_id: &'a str,
         task: &'a str,
         goal: &'a str,
+        area: &'a str,
         max_loops: u32,
     },
     AttemptStarted {
@@ -27,6 +28,12 @@ pub enum Event<'a> {
         stdout: &'a str,
         stderr: &'a str,
     },
+    GitHeadChecked {
+        attempt: u32,
+        baseline: &'a str,
+        current: &'a str,
+        unchanged: bool,
+    },
     ScopeEvaluated {
         attempt: u32,
         changed_paths: &'a [String],
@@ -35,6 +42,8 @@ pub enum Event<'a> {
     CheckFinished {
         attempt: u32,
         name: &'a str,
+        command: &'a str,
+        reason: &'a str,
         success: bool,
         exit_code: Option<i32>,
         stdout: &'a str,
@@ -47,6 +56,7 @@ pub enum Event<'a> {
     RunFinished {
         success: bool,
         attempts: u32,
+        changed_paths: &'a [String],
     },
 }
 
@@ -56,8 +66,8 @@ pub struct TrajectoryWriter {
 }
 
 impl TrajectoryWriter {
-    pub fn create(workspace: &Path, run_id: &str) -> Result<Self> {
-        let dir = workspace.join(".burncloud-harness").join("runs");
+    pub fn create(state_dir: &Path, run_id: &str) -> Result<Self> {
+        let dir = state_dir.join("runs");
         fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create trajectory directory {}", dir.display()))?;
         let path = dir.join(format!("{run_id}.jsonl"));
