@@ -1,8 +1,19 @@
 use anyhow::Result;
-use crossterm::{execute, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}};
-use ratatui::{backend::CrosstermBackend, widgets::{Block, Borders, Paragraph}, Terminal};
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    widgets::{Block, Borders, Paragraph},
+    Terminal,
+};
 use serde_json::Value;
-use std::{fs, io::{self, Write}, path::PathBuf};
+use std::{
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 pub fn run() -> Result<()> {
     let events = load_latest_events()?;
@@ -17,8 +28,11 @@ pub fn run() -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
         let lines = render_events(&events);
-        let widget = Paragraph::new(lines)
-            .block(Block::default().title("BurnCloud Harness Monitor").borders(Borders::ALL));
+        let widget = Paragraph::new(lines).block(
+            Block::default()
+                .title("BurnCloud Harness Monitor")
+                .borders(Borders::ALL),
+        );
         frame.render_widget(widget, area);
     })?;
 
