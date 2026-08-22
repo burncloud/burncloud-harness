@@ -29,6 +29,14 @@ The project deliberately stays small and BurnCloud-specific:
 
 No graph engine, marketplace, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
 
+## First BurnCloud intelligence layer
+
+The harness should not carry a stale private copy of BurnCloud architecture. Its first intelligence layer is deliberately source-derived:
+
+`task goal -> current TASK_ROUTER.md -> candidate source/evidence -> current INVARIANTS.md -> candidate invariants -> agent trace -> actual diff -> mandatory verification`
+
+The harness only chooses where the agent should start looking. Current source code remains the authority for what is actually true.
+
 ## Example task
 
 ```yaml
