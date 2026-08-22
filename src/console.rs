@@ -234,9 +234,11 @@ impl ConsoleObserver {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'))
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                if matches!(
+                    key.code,
+                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')
+                ) || (key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL))
                 {
                     return Ok(());
                 }
@@ -292,20 +294,41 @@ fn draw_dashboard(frame: &mut Frame, state: &DashboardState) {
 
 fn draw_header(frame: &mut Frame, area: Rect, state: &DashboardState) {
     let status = match state.final_status {
-        Some(true) => Span::styled(" PASS ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Some(false) => Span::styled(" STOPPED ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        None => Span::styled(" RUNNING ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Some(true) => Span::styled(
+            " PASS ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Some(false) => Span::styled(
+            " STOPPED ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        None => Span::styled(
+            " RUNNING ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     };
     let line = Line::from(vec![
         Span::styled(
             " BurnCloud Harness Console ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         status,
         Span::raw("  "),
-        Span::styled("HARNESS = BOUNDARIES + FEEDBACK", Style::default().fg(Color::White)),
+        Span::styled(
+            "HARNESS = BOUNDARIES + FEEDBACK",
+            Style::default().fg(Color::White),
+        ),
         Span::raw("   "),
-        Span::styled("LOOP = ATTEMPT -> EVIDENCE -> RETRY", Style::default().fg(Color::Magenta)),
+        Span::styled(
+            "LOOP = ATTEMPT -> EVIDENCE -> RETRY",
+            Style::default().fg(Color::Magenta),
+        ),
     ]);
     frame.render_widget(Paragraph::new(line).block(panel("CONTROL PLANE")), area);
 }
@@ -325,7 +348,10 @@ fn draw_task(frame: &mut Frame, area: Rect, state: &DashboardState) {
             "Phase",
             state.phase.map(RunPhase::as_str).unwrap_or("PREPARE"),
         ),
-        kv("Why now", value_or(&state.phase_detail, "initializing console")),
+        kv(
+            "Why now",
+            value_or(&state.phase_detail, "initializing console"),
+        ),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -345,14 +371,22 @@ fn draw_boundaries(frame: &mut Frame, area: Rect, state: &DashboardState) {
     } else {
         for path in state.allowed.iter().take(4) {
             lines.push(Line::from(vec![
-                Span::styled("ALLOW  ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "ALLOW  ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(path),
             ]));
         }
     }
     for path in state.avoid.iter().take(3) {
         lines.push(Line::from(vec![
-            Span::styled("DENY   ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "DENY   ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(path),
         ]));
     }
@@ -362,7 +396,10 @@ fn draw_boundaries(frame: &mut Frame, area: Rect, state: &DashboardState) {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
         for path in state.violations.iter().take(2) {
-            lines.push(Line::from(Span::styled(path, Style::default().fg(Color::Red))));
+            lines.push(Line::from(Span::styled(
+                path,
+                Style::default().fg(Color::Red),
+            )));
         }
     }
     frame.render_widget(
@@ -385,7 +422,10 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &DashboardState) {
     let mut spans = Vec::new();
     for (index, phase) in phases.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" -> ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                " -> ",
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         let active = state.phase == Some(*phase);
         let style = if active {
@@ -407,7 +447,9 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &DashboardState) {
     } else {
         lines.push(Line::from(Span::styled(
             "WHY THE LOOP RETRIED",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         )));
         for failure in state.failures.iter().rev().take(5).rev() {
             lines.push(Line::from(vec![
@@ -432,9 +474,16 @@ fn draw_invariants(frame: &mut Frame, area: Rect, state: &DashboardState) {
     for invariant in state.invariants.iter().take(6) {
         let is_new = state.newly_required.iter().any(|item| item == invariant);
         let marker = if is_new { "+NEW " } else { "KEEP " };
-        let color = if is_new { Color::Yellow } else { Color::Cyan };
+        let color = if is_new {
+            Color::Yellow
+        } else {
+            Color::Cyan
+        };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                marker,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(invariant),
         ]));
     }
@@ -447,7 +496,9 @@ fn draw_invariants(frame: &mut Frame, area: Rect, state: &DashboardState) {
     if !state.routes.is_empty() {
         lines.push(Line::from(Span::styled(
             "Route evidence:",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )));
         for route in state.routes.iter().take(2) {
             lines.push(Line::from(compact(route, 90)));
@@ -479,7 +530,9 @@ fn draw_paths(frame: &mut Frame, area: Rect, state: &DashboardState) {
     if !state.risks.is_empty() {
         lines.push(Line::from(Span::styled(
             "Risk findings:",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )));
         for risk in state.risks.iter().take(4) {
             lines.push(Line::from(compact(risk, 110)));
@@ -514,14 +567,19 @@ fn draw_checks(frame: &mut Frame, area: Rect, state: &DashboardState) {
                 ),
                 Span::styled(&check.name, Style::default().fg(Color::White)),
                 Span::raw(" — "),
-                Span::styled(compact(&check.reason, 70), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    compact(&check.reason, 70),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]));
         }
     }
     if let Some(last) = state.failures.last() {
         lines.push(Line::from(Span::styled(
             "Latest feedback:",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(compact(&last.detail, 180)));
     }
@@ -554,11 +612,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DashboardState) {
     );
 }
 
-fn split_horizontal(area: Rect, left: u16, right: u16) -> std::rc::Rc<[Rect]> {
-    Layout::default()
+fn split_horizontal(area: Rect, left: u16, right: u16) -> [Rect; 2] {
+    let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(left), Constraint::Percentage(right)])
-        .split(area)
+        .split(area);
+    [columns[0], columns[1]]
 }
 
 fn panel(title: &'static str) -> Block<'static> {
@@ -572,7 +631,9 @@ fn kv<'a>(key: &'a str, value: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(
             format!("{key:<8}"),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(value),
     ])
