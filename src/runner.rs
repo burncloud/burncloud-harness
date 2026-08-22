@@ -1,4 +1,4 @@
-use std::{path::PathBuf, process::Command};
+use std::{collections::BTreeSet, path::PathBuf, process::Command};
 
 use anyhow::{bail, Context, Result};
 
@@ -9,7 +9,7 @@ use crate::{
     git::GitRepo,
     invariants,
     policy::ScopePolicy,
-    route,
+    risk, route,
     trajectory::{new_run_id, Event, TrajectoryWriter},
 };
 
@@ -55,6 +55,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
     })?;
 
     let mut previous_feedback: Option<String> = None;
+    let mut reviewed_risks = BTreeSet::new();
 
     for attempt in 1..=task.max_loops {
         trajectory.record(Event::AttemptStarted { attempt })?;
@@ -179,13 +180,50 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         }
 
         let diff = git.diff()?;
-        if adds_ignored_test(&diff) {
-            trajectory.record(Event::RunFinished {
-                success: false,
-                attempts: attempt,
-                changed_paths: &changed_paths,
+        let risk_report = risk::inspect(&diff);
+        let risk_summaries = risk_report.summaries();
+        trajectory.record(Event::RiskAssessed {
+            attempt,
+            findings: &risk_summaries,
+        })?;
+
+        let blockers = risk_report.blockers();
+        if !blockers.is_empty() {
+            let feedback = format!(
+                "BurnCloud final-diff risk gate found blocking changes. Remove or restore these before completion:\n{}",
+                blockers
+                    .iter()
+                    .map(|finding| finding.summary())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            trajectory.record(Event::AttemptFailed {
+                attempt,
+                feedback: &feedback,
             })?;
-            bail!("diff adds #[ignore] to a test; burncloud-harness refuses test weakening");
+            previous_feedback = Some(feedback);
+            continue;
+        }
+
+        let unreviewed = risk_report.unreviewed(&reviewed_risks);
+        if !unreviewed.is_empty() {
+            for finding in &unreviewed {
+                reviewed_risks.insert(finding.fingerprint());
+            }
+            let feedback = format!(
+                "BurnCloud final-diff risk gate found changes that require one explicit review pass. Verify each item against the task contract and relevant invariants; fix it if accidental, or keep it only if intentional and explain why in REPORT:\n{}",
+                unreviewed
+                    .iter()
+                    .map(|finding| finding.summary())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            trajectory.record(Event::AttemptFailed {
+                attempt,
+                feedback: &feedback,
+            })?;
+            previous_feedback = Some(feedback);
+            continue;
         }
 
         let active_invariant_ids = active_invariants.ids();
@@ -279,11 +317,6 @@ fn run_agent(workspace: &std::path::Path, task: &TaskSpec, prompt: &str) -> Resu
     })
 }
 
-fn adds_ignored_test(diff: &str) -> bool {
-    diff.lines()
-        .any(|line| line.starts_with('+') && !line.starts_with("+++") && line.contains("#[ignore]"))
-}
-
 fn compact_failure(primary: &str, fallback: &str) -> String {
     let value = if primary.trim().is_empty() {
         fallback
@@ -296,18 +329,5 @@ fn compact_failure(primary: &str, fallback: &str) -> String {
         trimmed.to_owned()
     } else {
         format!("{}…", trimmed.chars().take(LIMIT).collect::<String>())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_new_ignore_attribute() {
-        assert!(adds_ignored_test("+    #[ignore]\n+    fn regression() {}"));
-        assert!(!adds_ignored_test(
-            "-    #[ignore]\n+    fn regression() {}"
-        ));
     }
 }
