@@ -5,6 +5,7 @@ mod config;
 mod git;
 mod invariants;
 mod policy;
+mod proposal;
 mod risk;
 mod route;
 mod runner;
@@ -43,6 +44,15 @@ enum Commands {
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
+    /// Turn repeated trajectory hotspots into read-only Harness improvement proposals.
+    Recommend {
+        #[arg(default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = 3)]
+        min_count: usize,
+    },
     /// Run one bounded coding task against a clean BurnCloud worktree.
     Run {
         #[arg(short, long)]
@@ -65,6 +75,11 @@ fn main() -> Result<()> {
         }
         Commands::Explain { task } => explain_task(TaskSpec::load(task)?)?,
         Commands::Analyze { workspace, limit } => analyze_workspace(workspace, limit)?,
+        Commands::Recommend {
+            workspace,
+            limit,
+            min_count,
+        } => recommend_workspace(workspace, limit, min_count)?,
         Commands::Run { task } => {
             let task = TaskSpec::load(task)?;
             let summary = runner::run(task)?;
@@ -103,12 +118,23 @@ fn explain_task(task: TaskSpec) -> Result<()> {
 }
 
 fn analyze_workspace(workspace: PathBuf, limit: usize) -> Result<()> {
+    let report = load_analysis(workspace, limit)?;
+    print!("{}", report.render());
+    Ok(())
+}
+
+fn recommend_workspace(workspace: PathBuf, limit: usize, min_count: usize) -> Result<()> {
+    let report = load_analysis(workspace, limit)?;
+    let proposals = proposal::build(&report, min_count);
+    print!("{}", proposal::render(&proposals, min_count));
+    Ok(())
+}
+
+fn load_analysis(workspace: PathBuf, limit: usize) -> Result<analysis::AnalysisReport> {
     let workspace = workspace.canonicalize()?;
     let burncloud = burncloud::BurncloudRepo::open(workspace.as_path())?;
     let git = git::GitRepo::new(burncloud.root());
     git.ensure_repository()?;
     let state_dir = git.harness_state_dir()?;
-    let report = analysis::analyze(&state_dir, limit)?;
-    print!("{}", report.render());
-    Ok(())
+    analysis::analyze(&state_dir, limit)
 }
