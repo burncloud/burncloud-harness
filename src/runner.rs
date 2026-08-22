@@ -19,7 +19,7 @@ pub struct RunSummary {
 }
 
 pub fn run(task: TaskSpec) -> Result<RunSummary> {
-    let workspace = PathBuf::from(&task.workspace)
+    let workspace = PathBuf::from(task.workspace.as_str())
         .canonicalize()
         .with_context(|| format!("failed to resolve workspace {}", task.workspace))?;
     let burncloud = BurncloudRepo::open(workspace.as_path())?;
