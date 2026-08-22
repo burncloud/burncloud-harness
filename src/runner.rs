@@ -189,11 +189,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         }
 
         let active_invariant_ids = active_invariants.ids();
-        let checks = plan_checks(
-            &changed_paths,
-            &active_invariant_ids,
-            &task.extra_checks,
-        );
+        let checks = plan_checks(&changed_paths, &active_invariant_ids, &task.extra_checks);
         let mut failed = Vec::new();
 
         for check in checks {
