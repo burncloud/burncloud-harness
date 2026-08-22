@@ -40,6 +40,8 @@ No graph engine, generic plugin system, autonomous harness mutation, or multi-ag
 cargo run -- doctor ../burncloud
 cargo run -- explain --task examples/router-task.yaml
 cargo run -- run --task examples/router-task.yaml
+cargo run -- run --task examples/router-task.yaml --resume
+cargo run -- run --task examples/router-task.yaml --resume --verify-existing
 cargo run -- run --task examples/router-task.yaml --tui
 cargo run -- analyze ../burncloud --limit 100
 cargo run -- recommend ../burncloud --limit 100 --min-count 3
@@ -48,6 +50,10 @@ cargo run -- recommend ../burncloud --limit 100 --min-count 3
 `explain` is read-only and shows task-router starting points, candidate invariants, and declared scope before code editing begins.
 
 `run --tui` executes the **same Harness and the same Loop** as normal `run`. Ratatui is only an observer/control-plane UI; it does not receive extra write permissions and it does not replace any gate.
+
+`run --resume` continues changes left by an interrupted Harness run. It fails closed unless every existing changed path is inside the task allowlist and outside the avoid list; the resumed diff still passes the normal invariant, risk, and verification gates.
+
+`run --resume --verify-existing` skips another coding-agent invocation and runs one deterministic gate pass over operator-approved resumed changes. Use it only after reviewing the interrupted agent's report and diff; scope, Git history, invariant impact, risk, and mandatory checks remain enforced.
 
 `analyze` is read-only and reports run outcomes, structured failure classes, invariant/risk/check signals, and BurnCloud area/domain hotspots.
 
@@ -68,6 +74,14 @@ agent:
 ```
 
 Older task files that still contain `--full-auto` are normalized by `burncloud-harness` to `--sandbox workspace-write` when the configured agent program is Codex. This keeps historical task files working while making the effective permission mode explicit.
+
+Task-owned reference documents that live outside the BurnCloud checkout must be declared explicitly. Paths are resolved relative to the task YAML and exposed to the agent as read-only context:
+
+```yaml
+context_files:
+  - ../../docs/ui/product-standard.md
+  - ../../docs/ui/page-contracts/buyer-overview.md
+```
 
 The Codex sandbox is **not** the BurnCloud scope boundary. Codex may write inside the checkout, while `burncloud-harness` independently inspects the real Git diff and rejects changes outside the task allowlist.
 
@@ -196,7 +210,8 @@ Natural-language feedback remains available to the next agent attempt, but Harne
 
 Verification is driven by changed paths plus active invariant IDs. Examples include:
 
-- Rust changes -> `cargo fmt --check`
+- Rust changes -> `git diff --check HEAD -- <changed-rust-files>` (baseline-aware changed-line whitespace gate)
+- client impact -> `cargo check -p burncloud-client`
 - router impact -> `cargo check -p burncloud-router`
 - runtime impact -> `cargo check -p burncloud-server`
 - auth/internal impact -> `cargo test -p burncloud-server --test security_invariants`

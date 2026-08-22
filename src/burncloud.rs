@@ -83,6 +83,7 @@ impl BurncloudRepo {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let context_files = task.context_prompt_text();
         let feedback = previous_feedback
             .map(|value| format!("\nPrevious harness feedback:\n{value}\n"))
             .unwrap_or_default();
@@ -99,6 +100,11 @@ Task name: {name}
 Task area: {area}
 Attempt: {attempt}/{max_loops}
 Goal: {goal}
+
+Task-provided read-only reference documents:
+{context_files}
+
+These reference documents may live outside the BurnCloud checkout. Read them as task context, but do not modify, copy, or promote them into the BurnCloud repository unless the allowlist and task goal explicitly require that change.
 
 Harness-selected TASK_ROUTER starting points:
 {routes}
@@ -134,6 +140,7 @@ Hard rules for this run:
             attempt = attempt,
             max_loops = task.max_loops,
             goal = task.goal,
+            context_files = context_files,
             routes = routes.prompt_text(),
             invariants = invariants.prompt_text(),
             allowed = allowed,
