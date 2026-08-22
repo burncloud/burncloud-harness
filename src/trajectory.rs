@@ -18,6 +18,12 @@ pub enum Event<'a> {
         area: &'a str,
         max_loops: u32,
     },
+    TaskRouted {
+        routes: &'a [String],
+    },
+    InvariantsSelected {
+        invariants: &'a [String],
+    },
     AttemptStarted {
         attempt: u32,
     },
