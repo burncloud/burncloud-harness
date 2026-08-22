@@ -51,6 +51,10 @@ pub enum Event<'a> {
         newly_required: &'a [String],
         reasons: &'a [String],
     },
+    RiskAssessed {
+        attempt: u32,
+        findings: &'a [String],
+    },
     CheckFinished {
         attempt: u32,
         name: &'a str,
