@@ -73,14 +73,24 @@ fn main() -> Result<()> {
             let workspace = workspace.canonicalize()?;
             burncloud::BurncloudRepo::open(workspace.as_path())?;
             git::GitRepo::new(workspace.as_path()).ensure_repository()?;
-            println!("BurnCloud harness preflight passed: {}", workspace.display());
+            println!(
+                "BurnCloud harness preflight passed: {}",
+                workspace.display()
+            );
         }
         Commands::Explain { task } => explain_task(TaskSpec::load(task)?)?,
         Commands::Analyze { workspace, limit } => analyze_workspace(workspace, limit)?,
-        Commands::Recommend { workspace, limit, min_count } => {
-            recommend_workspace(workspace, limit, min_count)?
-        }
-        Commands::Run { task, tui, resume, verify_existing } => {
+        Commands::Recommend {
+            workspace,
+            limit,
+            min_count,
+        } => recommend_workspace(workspace, limit, min_count)?,
+        Commands::Run {
+            task,
+            tui,
+            resume,
+            verify_existing,
+        } => {
             let task = TaskSpec::load(task)?;
             let summary = if tui {
                 console::run(task)?
@@ -104,17 +114,24 @@ fn explain_task(task: TaskSpec) -> Result<()> {
     let workspace = PathBuf::from(task.workspace.as_str()).canonicalize()?;
     let burncloud = burncloud::BurncloudRepo::open(workspace.as_path())?;
     git::GitRepo::new(burncloud.root()).ensure_repository()?;
+
     let routes = route::resolve(burncloud.root(), &task.goal, task.area)?;
-    let selected_invariants = invariants::resolve(burncloud.root(), task.area, &task.goal, &routes)?;
+    let selected_invariants =
+        invariants::resolve(burncloud.root(), task.area, &task.goal, &routes)?;
+
     println!("task={}", task.name);
     println!("area={}", task.area.as_str());
     println!("goal={}", task.goal);
     println!("\nTASK_ROUTER starting points:\n{}", routes.prompt_text());
-    println!("\nCandidate invariants:\n{}", selected_invariants.prompt_text());
+    println!(
+        "\nCandidate invariants:\n{}",
+        selected_invariants.prompt_text()
+    );
     println!("\nAllowed scope:\n- {}", task.scope.allowed.join("\n- "));
     if !task.scope.avoid.is_empty() {
         println!("\nAvoid scope:\n- {}", task.scope.avoid.join("\n- "));
     }
+
     Ok(())
 }
 
