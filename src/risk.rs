@@ -90,8 +90,9 @@ pub fn inspect(diff: &str) -> RiskReport {
                 code: "LINT_ESCAPE_ADDED",
                 severity: RiskSeverity::Block,
                 path: path.clone(),
-                detail: "new allow(clippy::unwrap_used) bypasses a BurnCloud workspace lint boundary"
-                    .into(),
+                detail:
+                    "new allow(clippy::unwrap_used) bypasses a BurnCloud workspace lint boundary"
+                        .into(),
             });
         }
 
@@ -110,7 +111,9 @@ pub fn inspect(diff: &str) -> RiskReport {
                     code: "SECURITY_GUARD_REMOVED",
                     severity: RiskSeverity::Block,
                     path: path.clone(),
-                    detail: format!("protected boundary symbol `{symbol}` was removed without replacement"),
+                    detail: format!(
+                        "protected boundary symbol `{symbol}` was removed without replacement"
+                    ),
                 });
             }
         }
@@ -130,12 +133,7 @@ pub fn inspect(diff: &str) -> RiskReport {
             }
         }
 
-        if is_runtime_source(&path)
-            && file
-                .added
-                .iter()
-                .any(|line| contains_todo_marker(line))
-        {
+        if is_runtime_source(&path) && file.added.iter().any(|line| contains_todo_marker(line)) {
             findings.push(RiskFinding {
                 code: "RUNTIME_TODO_ADDED",
                 severity: RiskSeverity::Review,
