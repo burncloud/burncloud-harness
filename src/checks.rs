@@ -1,0 +1,219 @@
+use std::{collections::BTreeMap, path::Path, process::Command};
+
+use anyhow::{Context, Result};
+
+use crate::config::CheckSpec;
+
+#[derive(Debug, Clone)]
+pub struct PlannedCheck {
+    pub name: String,
+    pub command: String,
+    pub reason: String,
+}
+
+#[derive(Debug)]
+pub struct CheckResult {
+    pub name: String,
+    pub command: String,
+    pub reason: String,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<PlannedCheck> {
+    let mut checks = BTreeMap::<String, PlannedCheck>::new();
+
+    if changed_paths.iter().any(|path| path.ends_with(".rs")) {
+        insert(
+            &mut checks,
+            "format",
+            "cargo fmt --check",
+            "BurnCloud TEST_MATRIX default verification ladder",
+        );
+    }
+
+    let mappings = [
+        (
+            "crates/router/",
+            "router-check",
+            "cargo check -p burncloud-router",
+        ),
+        (
+            "crates/server/",
+            "server-check",
+            "cargo check -p burncloud-server",
+        ),
+        (
+            "crates/service/crates/billing/",
+            "billing-service-check",
+            "cargo check -p burncloud-service-billing",
+        ),
+        (
+            "crates/database/crates/billing/",
+            "billing-database-check",
+            "cargo check -p burncloud-database-billing",
+        ),
+        (
+            "crates/database/crates/router/",
+            "router-database-check",
+            "cargo check -p burncloud-database-router",
+        ),
+        (
+            "crates/service/crates/router-log/",
+            "router-log-service-check",
+            "cargo check -p burncloud-service-router-log",
+        ),
+        (
+            "crates/service/crates/channel/",
+            "channel-service-check",
+            "cargo check -p burncloud-service-channel",
+        ),
+        (
+            "crates/database/crates/channel/",
+            "channel-database-check",
+            "cargo check -p burncloud-database-channel",
+        ),
+        (
+            "crates/service/crates/user/",
+            "user-service-check",
+            "cargo check -p burncloud-service-user",
+        ),
+        (
+            "crates/database/crates/user/",
+            "user-database-check",
+            "cargo check -p burncloud-database-user",
+        ),
+        (
+            "crates/client/",
+            "client-web-check",
+            "cargo check -p burncloud-client --no-default-features --features web",
+        ),
+    ];
+
+    for (prefix, name, command) in mappings {
+        if changed_paths.iter().any(|path| path.starts_with(prefix)) {
+            insert(
+                &mut checks,
+                name,
+                command,
+                "affected BurnCloud package must compile",
+            );
+        }
+    }
+
+    if changed_paths
+        .iter()
+        .any(|path| path == "Cargo.toml" || path == "Cargo.lock")
+    {
+        insert(
+            &mut checks,
+            "workspace-check",
+            "cargo check --workspace",
+            "root workspace dependency/API contract changed",
+        );
+    }
+
+    if changed_paths
+        .iter()
+        .any(|path| path.starts_with("crates/server/"))
+    {
+        insert(
+            &mut checks,
+            "security-invariants",
+            "cargo test -p burncloud-server --test security_invariants",
+            "BurnCloud security boundary is protected by a dedicated invariant suite",
+        );
+    }
+
+    if changed_paths.iter().any(|path| {
+        path.starts_with("crates/router/")
+            || path.starts_with("crates/database/crates/router/")
+            || path.starts_with("crates/service/crates/router-log/")
+    }) {
+        insert(
+            &mut checks,
+            "billing-invariants",
+            "cargo test -p burncloud-router --test billing_invariants --test quota_tests",
+            "BurnCloud router/billing ownership paths are protected by invariant tests",
+        );
+    }
+
+    for extra in extra_checks {
+        checks.insert(
+            format!("extra:{}", extra.name),
+            PlannedCheck {
+                name: extra.name.clone(),
+                command: extra.command.clone(),
+                reason: "task-defined extra verification".into(),
+            },
+        );
+    }
+
+    checks.into_values().collect()
+}
+
+pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> {
+    let output = shell_command(&check.command)
+        .current_dir(workspace)
+        .output()
+        .with_context(|| format!("failed to execute check '{}'", check.name))?;
+
+    Ok(CheckResult {
+        name: check.name.clone(),
+        command: check.command.clone(),
+        reason: check.reason.clone(),
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+fn insert(checks: &mut BTreeMap<String, PlannedCheck>, name: &str, command: &str, reason: &str) {
+    checks.entry(name.to_owned()).or_insert_with(|| PlannedCheck {
+        name: name.to_owned(),
+        command: command.to_owned(),
+        reason: reason.to_owned(),
+    });
+}
+
+fn shell_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", command]);
+        cmd
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-lc", command]);
+        cmd
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn router_change_gets_burncloud_invariant_gate() {
+        let checks = plan_checks(&["crates/router/src/lib.rs".into()], &[]);
+        let names = checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"format"));
+        assert!(names.contains(&"router-check"));
+        assert!(names.contains(&"billing-invariants"));
+    }
+
+    #[test]
+    fn docs_only_change_does_not_invent_build_checks() {
+        let checks = plan_checks(&["docs/agent/README.md".into()], &[]);
+        assert!(checks.is_empty());
+    }
+}
