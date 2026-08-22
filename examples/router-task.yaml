@@ -1,0 +1,22 @@
+name: router-fallback-fix
+goal: Preserve provider fallback when the first upstream returns a retryable failure.
+workspace: ../burncloud
+area: router
+max_loops: 3
+
+scope:
+  allowed:
+    - crates/router/**
+    - crates/tests/tests/api/**
+  avoid:
+    - crates/service/crates/billing/**
+    - crates/database/**
+
+agent:
+  program: codex
+  args:
+    - exec
+    - --full-auto
+  append_prompt: true
+
+extra_checks: []
