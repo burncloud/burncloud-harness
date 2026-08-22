@@ -89,12 +89,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 "agent changed git HEAD from {} to {}; burncloud-harness forbids commits/history changes",
                 baseline_head, current_head
             );
-            record_failure(
-                &mut trajectory,
-                attempt,
-                FailureClass::GitHistory,
-                &detail,
-            )?;
+            record_failure(&mut trajectory, attempt, FailureClass::GitHistory, &detail)?;
             trajectory.record(Event::RunFinished {
                 success: false,
                 attempts: attempt,
@@ -188,12 +183,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
 
         if changed_paths.is_empty() {
             let feedback = "No repository changes were produced. Re-check the goal and either make the smallest in-scope change or clearly report why no change is required.".to_owned();
-            record_retry(
-                &mut trajectory,
-                attempt,
-                FailureClass::NoChange,
-                &feedback,
-            )?;
+            record_retry(&mut trajectory, attempt, FailureClass::NoChange, &feedback)?;
             previous_feedback = Some(feedback);
             continue;
         }
@@ -216,12 +206,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
-            record_retry(
-                &mut trajectory,
-                attempt,
-                FailureClass::RiskBlock,
-                &feedback,
-            )?;
+            record_retry(&mut trajectory, attempt, FailureClass::RiskBlock, &feedback)?;
             previous_feedback = Some(feedback);
             continue;
         }
