@@ -269,6 +269,15 @@ fn relevant_prefixes(
         BurncloudArea::Other => {}
     }
 
+    // UI product requirements often mention backend concepts specifically to say
+    // that they must NOT be exposed ("admin", "token", "routing", "internal").
+    // Those words are not evidence that backend runtime invariants are in scope.
+    // If a UI task actually touches a backend boundary, assess_changed_paths()
+    // will promote the required invariant from the real diff.
+    if matches!(area, BurncloudArea::Ui) {
+        return prefixes;
+    }
+
     let context = format!(
         "{} {}",
         goal.to_ascii_lowercase(),
@@ -369,6 +378,24 @@ mod tests {
     }
 
     #[test]
+    fn ui_product_copy_does_not_invent_backend_invariants() {
+        let routes = RouteSelection {
+            rows: vec![RouteRow {
+                behavior: "UI / Console page behavior".into(),
+                primary: "client".into(),
+                related: "shared components".into(),
+                evidence: "console tests".into(),
+            }],
+        };
+        let prefixes = relevant_prefixes(
+            BurncloudArea::Ui,
+            "Hide admin token routing and internal infrastructure from Buyer UI",
+            &routes,
+        );
+        assert!(prefixes.is_empty());
+    }
+
+    #[test]
     fn router_lib_implies_router_and_billing_families() {
         let families = invariant_families_for_path("crates/router/src/lib.rs")
             .into_iter()
@@ -397,6 +424,9 @@ mod tests {
             items: vec![catalog()[1].clone(), catalog()[4].clone()],
         };
         selected.merge(&incoming);
-        assert_eq!(selected.ids(), vec!["INV-BILLING-001", "INV-ROUTER-001"]);
+        assert_eq!(
+            selected.ids(),
+            vec!["INV-BILLING-001", "INV-ROUTER-001"]
+        );
     }
 }
