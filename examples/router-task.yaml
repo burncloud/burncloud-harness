@@ -16,7 +16,8 @@ agent:
   program: codex
   args:
     - exec
-    - --full-auto
+    - --sandbox
+    - workspace-write
   append_prompt: true
 
 extra_checks: []

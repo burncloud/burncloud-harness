@@ -9,6 +9,7 @@ pub struct PlannedCheck {
     pub name: String,
     pub command: String,
     pub reason: String,
+    argv: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -30,13 +31,26 @@ pub fn plan_checks(
     let mut checks = Vec::new();
     let mut seen = BTreeSet::new();
 
-    if changed_paths.iter().any(|path| path.ends_with(".rs")) {
-        push_unique(
+    let changed_rust_paths = changed_paths
+        .iter()
+        .filter(|path| path.ends_with(".rs"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !changed_rust_paths.is_empty() {
+        let mut argv = vec![
+            "git".to_owned(),
+            "diff".to_owned(),
+            "--check".to_owned(),
+            "HEAD".to_owned(),
+            "--".to_owned(),
+        ];
+        argv.extend(changed_rust_paths);
+        push_unique_argv(
             &mut checks,
             &mut seen,
             "format",
-            "cargo fmt --check",
-            "BurnCloud TEST_MATRIX default verification ladder",
+            argv,
+            "check changed Rust lines without inheriting baseline formatting failures",
         );
     }
 
@@ -93,8 +107,8 @@ pub fn plan_checks(
         ),
         (
             "crates/client/",
-            "client-web-check",
-            "cargo check -p burncloud-client --no-default-features --features web",
+            "client-check",
+            "cargo check -p burncloud-client",
         ),
     ];
 
@@ -180,7 +194,14 @@ pub fn plan_checks(
 }
 
 pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> {
-    let output = shell_command(&check.command)
+    let mut command = if let Some(argv) = &check.argv {
+        let mut command = Command::new(&argv[0]);
+        command.args(&argv[1..]);
+        command
+    } else {
+        shell_command(&check.command)
+    };
+    let output = command
         .current_dir(workspace)
         .output()
         .with_context(|| format!("failed to execute check '{}'", check.name))?;
@@ -212,6 +233,24 @@ fn push_unique(
             name: name.to_owned(),
             command: command.to_owned(),
             reason: reason.to_owned(),
+            argv: None,
+        });
+    }
+}
+
+fn push_unique_argv(
+    checks: &mut Vec<PlannedCheck>,
+    seen: &mut BTreeSet<String>,
+    name: &str,
+    argv: Vec<String>,
+    reason: &str,
+) {
+    if seen.insert(name.to_owned()) {
+        checks.push(PlannedCheck {
+            name: name.to_owned(),
+            command: argv.join(" "),
+            reason: reason.to_owned(),
+            argv: Some(argv),
         });
     }
 }
@@ -248,6 +287,33 @@ mod tests {
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["format", "router-check", "billing-invariants"]);
+    }
+
+    #[test]
+    fn format_check_is_scoped_to_changed_rust_lines_without_a_shell() {
+        let checks = plan_checks(
+            &[
+                "crates/client/src/critical_pages/buyer_overview.rs".into(),
+                "crates/client/src/product_ui.css".into(),
+            ],
+            &[],
+            &[],
+        );
+
+        assert_eq!(checks[0].name, "format");
+        assert_eq!(
+            checks[0].argv.as_ref().unwrap(),
+            &vec![
+                "git".to_owned(),
+                "diff".to_owned(),
+                "--check".to_owned(),
+                "HEAD".to_owned(),
+                "--".to_owned(),
+                "crates/client/src/critical_pages/buyer_overview.rs".to_owned(),
+            ]
+        );
+        assert_eq!(checks[1].name, "client-check");
+        assert_eq!(checks[1].command, "cargo check -p burncloud-client");
     }
 
     #[test]

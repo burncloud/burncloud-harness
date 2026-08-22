@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -15,7 +18,17 @@ pub struct TaskSpec {
     pub scope: ScopeSpec,
     pub agent: AgentSpec,
     #[serde(default)]
+    pub context_files: Vec<String>,
+    #[serde(skip)]
+    pub resolved_context_files: Vec<ResolvedContextFile>,
+    #[serde(default)]
     pub extra_checks: Vec<CheckSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedContextFile {
+    pub declared_path: String,
+    pub absolute_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -75,9 +88,11 @@ impl TaskSpec {
         let path = path.as_ref();
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read task file {}", path.display()))?;
-        let task: Self = serde_yaml::from_str(&raw)
+        let mut task: Self = serde_yaml::from_str(&raw)
             .with_context(|| format!("failed to parse task file {}", path.display()))?;
+        task.normalize_agent_compatibility();
         task.validate()?;
+        task.resolve_context_files(path)?;
         Ok(task)
     }
 
@@ -97,6 +112,11 @@ impl TaskSpec {
         if self.agent.program.trim().is_empty() {
             bail!("agent.program must not be empty");
         }
+        for context_file in &self.context_files {
+            if context_file.trim().is_empty() {
+                bail!("context_files entries must not be empty");
+            }
+        }
         for check in &self.extra_checks {
             if check.name.trim().is_empty() || check.command.trim().is_empty() {
                 bail!("every extra check requires a non-empty name and command");
@@ -104,6 +124,99 @@ impl TaskSpec {
         }
         Ok(())
     }
+
+    pub fn context_prompt_text(&self) -> String {
+        if self.resolved_context_files.is_empty() {
+            return "- None declared".to_owned();
+        }
+
+        self.resolved_context_files
+            .iter()
+            .map(|context_file| {
+                format!(
+                    "- {} -> {}",
+                    context_file.declared_path,
+                    context_file.absolute_path.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn resolve_context_files(&mut self, task_path: &Path) -> Result<()> {
+        let task_path = task_path
+            .canonicalize()
+            .with_context(|| format!("failed to resolve task file {}", task_path.display()))?;
+        let task_dir = task_path
+            .parent()
+            .context("task file has no parent directory")?;
+
+        self.resolved_context_files = self
+            .context_files
+            .iter()
+            .map(|declared_path| {
+                let absolute_path =
+                    task_dir
+                        .join(declared_path)
+                        .canonicalize()
+                        .with_context(|| {
+                            format!(
+                                "failed to resolve context file '{}' relative to {}",
+                                declared_path,
+                                task_dir.display()
+                            )
+                        })?;
+                if !absolute_path.is_file() {
+                    bail!(
+                        "task context path is not a file: {}",
+                        absolute_path.display()
+                    );
+                }
+                Ok(ResolvedContextFile {
+                    declared_path: declared_path.clone(),
+                    absolute_path,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(())
+    }
+
+    fn normalize_agent_compatibility(&mut self) {
+        if !is_codex_program(&self.agent.program)
+            || !self.agent.args.iter().any(|arg| arg == "--full-auto")
+        {
+            return;
+        }
+
+        let already_has_sandbox = self
+            .agent
+            .args
+            .iter()
+            .any(|arg| arg == "--sandbox" || arg.starts_with("--sandbox="));
+        let mut normalized = Vec::with_capacity(self.agent.args.len() + 1);
+        let mut inserted_workspace_write = false;
+
+        for arg in &self.agent.args {
+            if arg == "--full-auto" {
+                if !already_has_sandbox && !inserted_workspace_write {
+                    normalized.push("--sandbox".to_owned());
+                    normalized.push("workspace-write".to_owned());
+                    inserted_workspace_write = true;
+                }
+                continue;
+            }
+            normalized.push(arg.clone());
+        }
+
+        self.agent.args = normalized;
+    }
+}
+
+fn is_codex_program(program: &str) -> bool {
+    Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("codex"))
 }
 
 fn default_workspace() -> String {
@@ -139,9 +252,126 @@ mod tests {
                 args: vec![],
                 append_prompt: true,
             },
+            context_files: vec![],
+            resolved_context_files: vec![],
             extra_checks: vec![],
         };
 
         assert!(task.validate().is_err());
+    }
+
+    #[test]
+    fn migrates_legacy_codex_full_auto_to_workspace_write() {
+        let mut task = TaskSpec {
+            name: "test".into(),
+            goal: "do something".into(),
+            workspace: ".".into(),
+            max_loops: 1,
+            area: BurncloudArea::Ui,
+            scope: ScopeSpec {
+                allowed: vec!["crates/client/**".into()],
+                avoid: vec![],
+            },
+            agent: AgentSpec {
+                program: "codex".into(),
+                args: vec!["exec".into(), "--full-auto".into()],
+                append_prompt: true,
+            },
+            context_files: vec![],
+            resolved_context_files: vec![],
+            extra_checks: vec![],
+        };
+
+        task.normalize_agent_compatibility();
+
+        assert_eq!(
+            task.agent.args,
+            vec!["exec", "--sandbox", "workspace-write"]
+        );
+    }
+
+    #[test]
+    fn resolves_context_files_relative_to_the_task_yaml() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "burncloud-harness-context-{}-{unique}",
+            std::process::id()
+        ));
+        let task_dir = root.join("tasks/ui");
+        let docs_dir = root.join("docs/ui");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::create_dir_all(&docs_dir).unwrap();
+        let context_path = docs_dir.join("contract.md");
+        fs::write(&context_path, "approved target contract").unwrap();
+        let task_path = task_dir.join("task.yaml");
+        fs::write(
+            &task_path,
+            r#"name: context-test
+goal: use the approved target contract
+workspace: .
+area: ui
+scope:
+  allowed:
+    - crates/client/**
+agent:
+  program: codex
+  args:
+    - exec
+context_files:
+  - ../../docs/ui/contract.md
+"#,
+        )
+        .unwrap();
+
+        let task = TaskSpec::load(&task_path).unwrap();
+        let expected = context_path.canonicalize().unwrap();
+
+        assert_eq!(task.resolved_context_files.len(), 1);
+        assert_eq!(task.resolved_context_files[0].absolute_path, expected);
+        assert!(task
+            .context_prompt_text()
+            .contains("../../docs/ui/contract.md"));
+        assert!(task
+            .context_prompt_text()
+            .contains(&expected.display().to_string()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preserves_explicit_codex_sandbox_when_removing_full_auto() {
+        let mut task = TaskSpec {
+            name: "test".into(),
+            goal: "do something".into(),
+            workspace: ".".into(),
+            max_loops: 1,
+            area: BurncloudArea::Ui,
+            scope: ScopeSpec {
+                allowed: vec!["crates/client/**".into()],
+                avoid: vec![],
+            },
+            agent: AgentSpec {
+                program: "codex".into(),
+                args: vec![
+                    "exec".into(),
+                    "--full-auto".into(),
+                    "--sandbox".into(),
+                    "danger-full-access".into(),
+                ],
+                append_prompt: true,
+            },
+            context_files: vec![],
+            resolved_context_files: vec![],
+            extra_checks: vec![],
+        };
+
+        task.normalize_agent_compatibility();
+
+        assert_eq!(
+            task.agent.args,
+            vec!["exec", "--sandbox", "danger-full-access"]
+        );
     }
 }

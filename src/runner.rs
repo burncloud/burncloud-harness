@@ -23,12 +23,31 @@ pub struct RunSummary {
 
 pub fn run(task: TaskSpec) -> Result<RunSummary> {
     let mut observer = NoopObserver;
-    run_with_observer(task, &mut observer)
+    run_with_observer_mode(task, &mut observer, false, true)
+}
+
+pub fn resume(task: TaskSpec) -> Result<RunSummary> {
+    let mut observer = NoopObserver;
+    run_with_observer_mode(task, &mut observer, true, true)
+}
+
+pub fn verify_existing(task: TaskSpec) -> Result<RunSummary> {
+    let mut observer = NoopObserver;
+    run_with_observer_mode(task, &mut observer, true, false)
 }
 
 pub fn run_with_observer<O: RunObserver + ?Sized>(
     task: TaskSpec,
     observer: &mut O,
+) -> Result<RunSummary> {
+    run_with_observer_mode(task, observer, false, true)
+}
+
+fn run_with_observer_mode<O: RunObserver + ?Sized>(
+    task: TaskSpec,
+    observer: &mut O,
+    resume_existing_changes: bool,
+    execute_agent: bool,
 ) -> Result<RunSummary> {
     let workspace = PathBuf::from(task.workspace.as_str())
         .canonicalize()
@@ -36,7 +55,24 @@ pub fn run_with_observer<O: RunObserver + ?Sized>(
     let burncloud = BurncloudRepo::open(workspace.as_path())?;
     let git = GitRepo::new(burncloud.root());
     git.ensure_repository()?;
-    git.ensure_clean()?;
+    let scope = ScopePolicy::compile(&task.scope)?;
+    let resumed_paths = if resume_existing_changes {
+        let changed_paths = git.changed_paths()?;
+        if changed_paths.is_empty() {
+            bail!("--resume requires existing BurnCloud worktree changes");
+        }
+        let report = scope.evaluate(&changed_paths);
+        if !report.is_ok() {
+            bail!(
+                "cannot resume changes outside the task scope: {}",
+                report.violations.join(", ")
+            );
+        }
+        changed_paths
+    } else {
+        git.ensure_clean()?;
+        Vec::new()
+    };
 
     let routes = route::resolve(burncloud.root(), &task.goal, task.area)?;
     let mut active_invariants =
@@ -45,7 +81,6 @@ pub fn run_with_observer<O: RunObserver + ?Sized>(
     let initial_invariant_ids = active_invariants.ids();
 
     let baseline_head = git.head_sha()?;
-    let scope = ScopePolicy::compile(&task.scope)?;
     let run_id = new_run_id();
     let state_dir = git.harness_state_dir()?;
     let mut trajectory = TrajectoryWriter::create(&state_dir, &run_id)?;
@@ -73,25 +108,47 @@ pub fn run_with_observer<O: RunObserver + ?Sized>(
         invariants: initial_invariant_ids.clone(),
     })?;
 
-    let mut previous_feedback: Option<String> = None;
+    let mut previous_feedback = if resumed_paths.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "This run is explicitly resuming existing in-scope changes left by an interrupted Harness run. Inspect and continue or correct these paths; do not assume they are complete:\n- {}",
+            resumed_paths.join("\n- ")
+        ))
+    };
     let mut reviewed_risks = BTreeSet::new();
+    let attempt_limit = if execute_agent { task.max_loops } else { 1 };
 
-    for attempt in 1..=task.max_loops {
+    for attempt in 1..=attempt_limit {
         trajectory.record(Event::AttemptStarted { attempt })?;
         observer.on_event(RunEvent::Phase {
             attempt,
             phase: RunPhase::Agent,
-            detail: "Coding agent is executing inside the declared BurnCloud scope".into(),
+            detail: if execute_agent {
+                "Coding agent is executing inside the declared BurnCloud scope".into()
+            } else {
+                "Operator requested deterministic verification of existing in-scope changes".into()
+            },
         })?;
 
-        let prompt = burncloud.control_prompt(
-            &task,
-            &routes,
-            &active_invariants,
-            attempt,
-            previous_feedback.as_deref(),
-        );
-        let agent_result = run_agent(&workspace, &task, &prompt)?;
+        let agent_result = if execute_agent {
+            let prompt = burncloud.control_prompt(
+                &task,
+                &routes,
+                &active_invariants,
+                attempt,
+                previous_feedback.as_deref(),
+            );
+            run_agent(&workspace, &task, &prompt)?
+        } else {
+            AgentResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "No agent command executed; verifying existing operator-approved in-scope changes."
+                    .to_owned(),
+                stderr: String::new(),
+            }
+        };
         trajectory.record(Event::AgentFinished {
             attempt,
             success: agent_result.success,
@@ -251,7 +308,10 @@ pub fn run_with_observer<O: RunObserver + ?Sized>(
         }
 
         if changed_paths.is_empty() {
-            let feedback = "No repository changes were produced. Re-check the goal and either make the smallest in-scope change or clearly report why no change is required.".to_owned();
+            let agent_report = compact_failure(&agent_result.stdout, &agent_result.stderr);
+            let feedback = format!(
+                "No repository changes were produced. Re-check the goal and either make the smallest in-scope change or clearly report why no change is required.\nPrevious agent report:\n{agent_report}"
+            );
             record_retry(
                 &mut trajectory,
                 observer,
@@ -408,23 +468,23 @@ pub fn run_with_observer<O: RunObserver + ?Sized>(
     let changed_paths = git.changed_paths()?;
     let detail = format!(
         "task did not pass burncloud-harness after {} attempts",
-        task.max_loops
+        attempt_limit
     );
     record_failure(
         &mut trajectory,
         observer,
-        task.max_loops,
+        attempt_limit,
         FailureClass::MaxLoops,
         &detail,
     )?;
     trajectory.record(Event::RunFinished {
         success: false,
-        attempts: task.max_loops,
+        attempts: attempt_limit,
         changed_paths: &changed_paths,
     })?;
     observer.on_event(RunEvent::Finished {
         success: false,
-        attempts: task.max_loops,
+        attempts: attempt_limit,
         changed_paths,
         trajectory_path: trajectory.path().to_path_buf(),
     })?;

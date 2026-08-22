@@ -1,0 +1,62 @@
+name: ui-buyer-overview-v1
+
+goal: |
+  Rebuild the BurnCloud Buyer Overview according to the approved UI target
+  contracts in docs/ui/.
+
+  Required target documents:
+  - docs/ui/product-standard.md
+  - docs/ui/information-architecture.md
+  - docs/ui/page-contracts/buyer-overview.md
+  - docs/ui/design-system.md
+  - docs/ui/interaction-rules.md
+  - docs/ui/content-standard.md
+  - docs/ui/review-checklist.md
+  - docs/ui/agent-execution.md
+
+  Treat these documents as TARGET truth, not current implementation truth.
+
+  First inspect the current BurnCloud client implementation and determine the
+  actual Buyer Overview route, components, data sources, and existing UI
+  conventions.
+
+  Implement the smallest coherent migration toward the Buyer Overview contract.
+
+  Do not redesign unrelated pages.
+  Do not change the Buyer/Supplier/Admin information architecture.
+  Do not expose GPU, supplier, IDC, routing topology, or other internal
+  infrastructure details to Buyer UI.
+
+workspace: ../burncloud
+area: ui
+max_loops: 5
+
+context_files:
+  - ../../docs/ui/product-standard.md
+  - ../../docs/ui/information-architecture.md
+  - ../../docs/ui/page-contracts/buyer-overview.md
+  - ../../docs/ui/design-system.md
+  - ../../docs/ui/interaction-rules.md
+  - ../../docs/ui/content-standard.md
+  - ../../docs/ui/review-checklist.md
+  - ../../docs/ui/agent-execution.md
+
+scope:
+  allowed:
+    - crates/client/**
+    - crates/tests/tests/e2e/**
+
+  avoid:
+    - crates/router/**
+    - crates/server/**
+    - crates/service/**
+    - crates/database/**
+
+agent:
+  program: codex
+  args:
+    - exec
+    - --full-auto
+  append_prompt: true
+
+extra_checks: []

@@ -55,13 +55,19 @@ enum Commands {
         #[arg(long, default_value_t = 3)]
         min_count: usize,
     },
-    /// Run one bounded coding task against a clean BurnCloud worktree.
+    /// Run one bounded coding task against a clean or explicitly resumed worktree.
     Run {
         #[arg(short, long)]
         task: PathBuf,
         /// Show the Harness boundaries and evidence-driven Loop in a Ratatui console.
         #[arg(long)]
         tui: bool,
+        /// Continue existing in-scope changes left by an interrupted Harness run.
+        #[arg(long, conflicts_with = "tui")]
+        resume: bool,
+        /// Run deterministic gates on resumed changes without starting another agent.
+        #[arg(long, requires = "resume", conflicts_with = "tui")]
+        verify_existing: bool,
     },
 }
 
@@ -85,10 +91,19 @@ fn main() -> Result<()> {
             limit,
             min_count,
         } => recommend_workspace(workspace, limit, min_count)?,
-        Commands::Run { task, tui } => {
+        Commands::Run {
+            task,
+            tui,
+            resume,
+            verify_existing,
+        } => {
             let task = TaskSpec::load(task)?;
             let summary = if tui {
                 console::run(task)?
+            } else if verify_existing {
+                runner::verify_existing(task)?
+            } else if resume {
+                runner::resume(task)?
             } else {
                 runner::run(task)?
             };
