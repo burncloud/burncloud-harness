@@ -12,9 +12,9 @@ BurnCloud already defines the engineering truth in `AGENTS.md` and `docs/agent/`
 
 `DISCOVER -> UNDERSTAND -> TRACE -> CONTRACT -> PLAN -> CHANGE -> VERIFY -> INSPECT -> REPORT`
 
-The current harness loop is:
+The current Harness + Loop is:
 
-`task goal -> TASK_ROUTER -> candidate invariants -> agent trace -> actual git diff -> scope -> invariant impact -> risk gate -> verification -> PASS / feedback`
+`task goal -> TASK_ROUTER -> candidate invariants -> agent -> actual git diff -> scope -> invariant impact -> risk gate -> verification -> PASS / feedback -> next loop`
 
 Important properties:
 
@@ -29,6 +29,7 @@ Important properties:
 - records failures as machine-readable classes in append-only trajectories,
 - correlates those failures with BurnCloud task areas and actual changed-code domains,
 - turns repeated hotspots into read-only, evidence-backed Harness improvement proposals,
+- can render the same control state in an interactive Ratatui console,
 - never lets trajectory analysis mutate protected policy automatically.
 
 No graph engine, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
@@ -39,15 +40,77 @@ No graph engine, generic plugin system, autonomous harness mutation, or multi-ag
 cargo run -- doctor ../burncloud
 cargo run -- explain --task examples/router-task.yaml
 cargo run -- run --task examples/router-task.yaml
+cargo run -- run --task examples/router-task.yaml --tui
 cargo run -- analyze ../burncloud --limit 100
 cargo run -- recommend ../burncloud --limit 100 --min-count 3
 ```
 
 `explain` is read-only and shows task-router starting points, candidate invariants, and declared scope before code editing begins.
 
+`run --tui` executes the **same Harness and the same Loop** as normal `run`. Ratatui is only an observer/control-plane UI; it does not receive extra write permissions and it does not replace any gate.
+
 `analyze` is read-only and reports run outcomes, structured failure classes, invariant/risk/check signals, and BurnCloud area/domain hotspots.
 
 `recommend` is also read-only. It converts repeated area/domain failure hotspots into explicit improvement proposals with the supporting count. It cannot change prompts, permissions, invariant mappings, tests, or protected policy.
+
+## Ratatui Harness Console
+
+The console exists to improve the developer's mental model, not merely to make logs prettier.
+
+It deliberately shows the distinction:
+
+```text
+HARNESS = boundaries + context + deterministic feedback
+LOOP    = attempt -> evidence -> feedback -> retry
+```
+
+The screen contains five conceptual views:
+
+1. **Task Contract** — task, goal, BurnCloud area, current attempt, current phase, and why the Harness is in that phase.
+2. **Hard Boundary** — explicit `ALLOW` and `DENY` paths plus any real scope violation detected from Git.
+3. **Evidence-driven Loop** — `AGENT -> SCOPE -> INVARIANTS -> RISK -> VERIFY -> FEEDBACK`, with the current phase highlighted and every retry reason preserved.
+4. **Actual Reality** — active invariants, routing evidence, actual changed paths, risk findings, and mandatory checks.
+5. **Mental Model** — continuously reminds the operator that the Harness owns boundaries while Codex acts inside them; failed evidence becomes the next Loop input.
+
+A typical loop becomes visible as:
+
+```text
+Attempt 1 / 3
+AGENT -> SCOPE -> INVARIANTS
+                     |
+                     +-- INV-BILLING-001 discovered from actual diff
+
+Feedback: invariant_expansion
+                     |
+                     v
+Attempt 2 / 3
+AGENT -> SCOPE -> INVARIANTS -> RISK -> VERIFY
+                                          |
+                                          +-- billing-invariants FAIL
+
+Feedback: verification
+                     |
+                     v
+Attempt 3 / 3
+...
+```
+
+The console waits on the final PASS/STOPPED screen so a developer can inspect the result, then closes with `Enter`, `q`, `Esc`, or `Ctrl-C`.
+
+## Observer boundary
+
+The Ratatui integration is intentionally implemented as an observer over the runner. The runner emits structured state transitions such as:
+
+- prepared task contract,
+- current Harness phase,
+- actual changed paths and violations,
+- invariant expansion,
+- risk findings,
+- check start/result,
+- structured failure class,
+- final result and trajectory path.
+
+Headless `run` uses a no-op observer. `run --tui` uses the Ratatui observer. Both paths call the same `run_with_observer` core, so visualization cannot silently fork the security behavior.
 
 ## Example task
 
@@ -145,26 +208,7 @@ Changed paths are collapsed into stable BurnCloud domains such as `router`, `ser
 
 ## Evidence-backed proposals
 
-`recommend` applies a minimum evidence threshold to the hotspot data. A proposal includes:
-
-- priority,
-- Harness layer that should be reviewed,
-- whether the evidence came from task area or actual changed domain,
-- hotspot context,
-- failure class,
-- occurrence count,
-- a conservative suggested change.
-
-Example:
-
-```text
-BurnCloud Harness Improvement Proposals
-evidence_threshold=3 policy_mutation=disabled
-
-1. [medium] Verification
-   evidence: area / router -> 7x verification
-   proposal: Move the most relevant BurnCloud check earlier for this hotspot or add a cheaper targeted preflight, while keeping the final invariant gate authoritative.
-```
+`recommend` applies a minimum evidence threshold to hotspot data. A proposal includes priority, Harness layer, evidence source, hotspot context, failure class, occurrence count, and a conservative suggested change.
 
 Recommendations are deliberately asymmetric: repeated `risk_block`, `scope_violation`, or `git_history` failures do **not** produce suggestions to weaken the guardrail. They recommend improving guidance/capability boundaries while preserving the hard block.
 
@@ -174,4 +218,4 @@ A useful BurnCloud failure should move through this ladder only when evidence su
 
 `structured failure -> repeated hotspot -> evidence-backed proposal -> human approval -> stronger routing/invariant/check/risk rule -> regression verification`
 
-The worker agent still cannot rewrite the rules that control itself. The next step after this layer should be a human-approved proposal application workflow with explicit before/after regression evidence, not autonomous policy mutation.
+The worker agent still cannot rewrite the rules that control itself. Ratatui makes those rules and loops visible; it does not relax them.
