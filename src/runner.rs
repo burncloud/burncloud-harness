@@ -8,6 +8,7 @@ use crate::{
     config::TaskSpec,
     git::GitRepo,
     invariants,
+    observer::{NoopObserver, RunEvent, RunObserver, RunPhase},
     policy::ScopePolicy,
     risk, route,
     trajectory::{new_run_id, Event, FailureClass, TrajectoryWriter},
@@ -21,6 +22,14 @@ pub struct RunSummary {
 }
 
 pub fn run(task: TaskSpec) -> Result<RunSummary> {
+    let mut observer = NoopObserver;
+    run_with_observer(task, &mut observer)
+}
+
+pub fn run_with_observer<O: RunObserver + ?Sized>(
+    task: TaskSpec,
+    observer: &mut O,
+) -> Result<RunSummary> {
     let workspace = PathBuf::from(task.workspace.as_str())
         .canonicalize()
         .with_context(|| format!("failed to resolve workspace {}", task.workspace))?;
@@ -53,12 +62,28 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
     trajectory.record(Event::InvariantsSelected {
         invariants: &initial_invariant_ids,
     })?;
+    observer.on_event(RunEvent::Prepared {
+        task: task.name.clone(),
+        goal: task.goal.clone(),
+        area: task.area.as_str().to_owned(),
+        max_loops: task.max_loops,
+        allowed: task.scope.allowed.clone(),
+        avoid: task.scope.avoid.clone(),
+        routes: route_labels.clone(),
+        invariants: initial_invariant_ids.clone(),
+    })?;
 
     let mut previous_feedback: Option<String> = None;
     let mut reviewed_risks = BTreeSet::new();
 
     for attempt in 1..=task.max_loops {
         trajectory.record(Event::AttemptStarted { attempt })?;
+        observer.on_event(RunEvent::Phase {
+            attempt,
+            phase: RunPhase::Agent,
+            detail: "Coding agent is executing inside the declared BurnCloud scope".into(),
+        })?;
+
         let prompt = burncloud.control_prompt(
             &task,
             &routes,
@@ -75,6 +100,11 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             stderr: &agent_result.stderr,
         })?;
 
+        observer.on_event(RunEvent::Phase {
+            attempt,
+            phase: RunPhase::Scope,
+            detail: "Reading the real Git diff; agent claims do not define the boundary".into(),
+        })?;
         let current_head = git.head_sha()?;
         let head_unchanged = current_head == baseline_head;
         trajectory.record(Event::GitHeadChecked {
@@ -89,11 +119,23 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 "agent changed git HEAD from {} to {}; burncloud-harness forbids commits/history changes",
                 baseline_head, current_head
             );
-            record_failure(&mut trajectory, attempt, FailureClass::GitHistory, &detail)?;
+            record_failure(
+                &mut trajectory,
+                observer,
+                attempt,
+                FailureClass::GitHistory,
+                &detail,
+            )?;
             trajectory.record(Event::RunFinished {
                 success: false,
                 attempts: attempt,
                 changed_paths: &changed_paths,
+            })?;
+            observer.on_event(RunEvent::Finished {
+                success: false,
+                attempts: attempt,
+                changed_paths,
+                trajectory_path: trajectory.path().to_path_buf(),
             })?;
             bail!("{detail}");
         }
@@ -105,6 +147,11 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             changed_paths: &changed_paths,
             violations: &report.violations,
         })?;
+        observer.on_event(RunEvent::Paths {
+            attempt,
+            changed: changed_paths.clone(),
+            violations: report.violations.clone(),
+        })?;
 
         if !report.is_ok() {
             let detail = format!(
@@ -113,6 +160,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             );
             record_failure(
                 &mut trajectory,
+                observer,
                 attempt,
                 FailureClass::ScopeViolation,
                 &detail,
@@ -122,10 +170,21 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 attempts: attempt,
                 changed_paths: &changed_paths,
             })?;
+            observer.on_event(RunEvent::Finished {
+                success: false,
+                attempts: attempt,
+                changed_paths,
+                trajectory_path: trajectory.path().to_path_buf(),
+            })?;
             bail!("{detail}");
         }
 
         if !changed_paths.is_empty() {
+            observer.on_event(RunEvent::Phase {
+                attempt,
+                phase: RunPhase::Invariants,
+                detail: "Recomputing invariant impact from the actual changed paths".into(),
+            })?;
             let impact = invariants::assess_changed_paths(
                 burncloud.root(),
                 &changed_paths,
@@ -142,6 +201,14 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
 
             if !impact.newly_required.is_empty() {
                 active_invariants.merge(&impact.newly_required);
+            }
+            observer.on_event(RunEvent::Invariants {
+                attempt,
+                active: active_invariants.ids(),
+                newly_required: newly_required_ids.clone(),
+            })?;
+
+            if !newly_required_ids.is_empty() {
                 let mut feedback = format!(
                     "The actual BurnCloud diff expanded invariant impact beyond the pre-change contract. Before completion, re-read and verify these newly required invariants against current source: {}.\nImpact evidence:\n{}\nDo not widen scope unless source evidence requires NEED_SCOPE_EXPANSION.",
                     newly_required_ids.join(", "),
@@ -156,6 +223,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 }
                 record_retry(
                     &mut trajectory,
+                    observer,
                     attempt,
                     FailureClass::InvariantExpansion,
                     &feedback,
@@ -173,6 +241,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             );
             record_retry(
                 &mut trajectory,
+                observer,
                 attempt,
                 FailureClass::AgentCommand,
                 &feedback,
@@ -183,17 +252,32 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
 
         if changed_paths.is_empty() {
             let feedback = "No repository changes were produced. Re-check the goal and either make the smallest in-scope change or clearly report why no change is required.".to_owned();
-            record_retry(&mut trajectory, attempt, FailureClass::NoChange, &feedback)?;
+            record_retry(
+                &mut trajectory,
+                observer,
+                attempt,
+                FailureClass::NoChange,
+                &feedback,
+            )?;
             previous_feedback = Some(feedback);
             continue;
         }
 
+        observer.on_event(RunEvent::Phase {
+            attempt,
+            phase: RunPhase::Risk,
+            detail: "Scanning the final diff for deterministic BurnCloud risk signals".into(),
+        })?;
         let diff = git.diff()?;
         let risk_report = risk::inspect(&diff);
         let risk_summaries = risk_report.summaries();
         trajectory.record(Event::RiskAssessed {
             attempt,
             findings: &risk_summaries,
+        })?;
+        observer.on_event(RunEvent::Risks {
+            attempt,
+            findings: risk_summaries,
         })?;
 
         let blockers = risk_report.blockers();
@@ -206,7 +290,13 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
-            record_retry(&mut trajectory, attempt, FailureClass::RiskBlock, &feedback)?;
+            record_retry(
+                &mut trajectory,
+                observer,
+                attempt,
+                FailureClass::RiskBlock,
+                &feedback,
+            )?;
             previous_feedback = Some(feedback);
             continue;
         }
@@ -226,6 +316,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             );
             record_retry(
                 &mut trajectory,
+                observer,
                 attempt,
                 FailureClass::RiskReview,
                 &feedback,
@@ -234,11 +325,22 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
             continue;
         }
 
+        observer.on_event(RunEvent::Phase {
+            attempt,
+            phase: RunPhase::Verify,
+            detail: "Running mandatory checks selected from changed paths and active invariants".into(),
+        })?;
         let active_invariant_ids = active_invariants.ids();
         let checks = plan_checks(&changed_paths, &active_invariant_ids, &task.extra_checks);
         let mut failed = Vec::new();
 
         for check in checks {
+            observer.on_event(RunEvent::Check {
+                attempt,
+                name: check.name.clone(),
+                reason: check.reason.clone(),
+                success: None,
+            })?;
             let result = run_check(&workspace, &check)?;
             trajectory.record(Event::CheckFinished {
                 attempt,
@@ -249,6 +351,12 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 exit_code: result.exit_code,
                 stdout: &result.stdout,
                 stderr: &result.stderr,
+            })?;
+            observer.on_event(RunEvent::Check {
+                attempt,
+                name: result.name.clone(),
+                reason: result.reason.clone(),
+                success: Some(result.success),
             })?;
 
             if !result.success {
@@ -267,11 +375,18 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
                 attempts: attempt,
                 changed_paths: &changed_paths,
             })?;
+            let trajectory_path = trajectory.path().to_path_buf();
+            observer.on_event(RunEvent::Finished {
+                success: true,
+                attempts: attempt,
+                changed_paths: changed_paths.clone(),
+                trajectory_path: trajectory_path.clone(),
+            })?;
             return Ok(RunSummary {
                 run_id,
                 attempts: attempt,
                 changed_paths,
-                trajectory_path: trajectory.path().to_path_buf(),
+                trajectory_path,
             });
         }
 
@@ -281,6 +396,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         );
         record_retry(
             &mut trajectory,
+            observer,
             attempt,
             FailureClass::Verification,
             &feedback,
@@ -295,6 +411,7 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
     );
     record_failure(
         &mut trajectory,
+        observer,
         task.max_loops,
         FailureClass::MaxLoops,
         &detail,
@@ -304,22 +421,30 @@ pub fn run(task: TaskSpec) -> Result<RunSummary> {
         attempts: task.max_loops,
         changed_paths: &changed_paths,
     })?;
+    observer.on_event(RunEvent::Finished {
+        success: false,
+        attempts: task.max_loops,
+        changed_paths,
+        trajectory_path: trajectory.path().to_path_buf(),
+    })?;
     bail!("{detail}; trajectory: {}", trajectory.path().display())
 }
 
-fn record_retry(
+fn record_retry<O: RunObserver + ?Sized>(
     trajectory: &mut TrajectoryWriter,
+    observer: &mut O,
     attempt: u32,
     class: FailureClass,
     feedback: &str,
 ) -> Result<()> {
-    record_failure(trajectory, attempt, class, feedback)?;
+    record_failure(trajectory, observer, attempt, class, feedback)?;
     trajectory.record(Event::AttemptFailed { attempt, feedback })?;
     Ok(())
 }
 
-fn record_failure(
+fn record_failure<O: RunObserver + ?Sized>(
     trajectory: &mut TrajectoryWriter,
+    observer: &mut O,
     attempt: u32,
     class: FailureClass,
     detail: &str,
@@ -328,6 +453,11 @@ fn record_failure(
         attempt,
         class,
         detail,
+    })?;
+    observer.on_event(RunEvent::Failure {
+        attempt,
+        class: class.as_str().to_owned(),
+        detail: detail.to_owned(),
     })?;
     Ok(())
 }
