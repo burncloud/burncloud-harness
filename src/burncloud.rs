@@ -5,11 +5,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 
-use crate::{
-    config::TaskSpec,
-    invariants::InvariantSelection,
-    route::RouteSelection,
-};
+use crate::{config::TaskSpec, invariants::InvariantSelection, route::RouteSelection};
 
 pub const REQUIRED_BOOTSTRAP_DOCS: &[&str] = &[
     "AGENTS.md",
