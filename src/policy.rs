@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use crate::config::PolicySpec;
+use crate::config::ScopeSpec;
 
 #[derive(Debug)]
 pub struct ScopePolicy {
     allowed: GlobSet,
-    denied: GlobSet,
+    avoid: GlobSet,
 }
 
 #[derive(Debug, Clone)]
@@ -16,10 +16,10 @@ pub struct ScopeReport {
 }
 
 impl ScopePolicy {
-    pub fn compile(spec: &PolicySpec) -> Result<Self> {
+    pub fn compile(spec: &ScopeSpec) -> Result<Self> {
         Ok(Self {
-            allowed: compile_globs(&spec.allowed_paths).context("invalid allowed_paths glob")?,
-            denied: compile_globs(&spec.denied_paths).context("invalid denied_paths glob")?,
+            allowed: compile_globs(&spec.allowed).context("invalid scope.allowed glob")?,
+            avoid: compile_globs(&spec.avoid).context("invalid scope.avoid glob")?,
         })
     }
 
@@ -33,7 +33,7 @@ impl ScopePolicy {
 
         for path in paths {
             let normalized = normalize_path(path.as_ref());
-            let permitted = self.allowed.is_match(&normalized) && !self.denied.is_match(&normalized);
+            let permitted = self.allowed.is_match(&normalized) && !self.avoid.is_match(&normalized);
             if permitted {
                 allowed.push(normalized);
             } else {
@@ -41,7 +41,10 @@ impl ScopePolicy {
             }
         }
 
-        ScopeReport { allowed, violations }
+        ScopeReport {
+            allowed,
+            violations,
+        }
     }
 }
 
@@ -68,31 +71,37 @@ mod tests {
     use super::*;
 
     fn policy() -> ScopePolicy {
-        ScopePolicy::compile(&PolicySpec {
-            allowed_paths: vec!["src/router/**".into(), "tests/router/**".into()],
-            denied_paths: vec!["src/router/secrets/**".into()],
+        ScopePolicy::compile(&ScopeSpec {
+            allowed: vec![
+                "crates/router/**".into(),
+                "crates/tests/tests/api/**".into(),
+            ],
+            avoid: vec!["crates/router/secrets/**".into()],
         })
         .unwrap()
     }
 
     #[test]
-    fn denied_paths_override_allowed_paths() {
+    fn avoid_paths_override_allowed_paths() {
         let report = policy().evaluate([
-            "src/router/mod.rs",
-            "src/router/secrets/key.rs",
-            "src/billing.rs",
+            "crates/router/src/lib.rs",
+            "crates/router/secrets/key.rs",
+            "crates/service/crates/billing/src/lib.rs",
         ]);
 
-        assert_eq!(report.allowed, vec!["src/router/mod.rs"]);
+        assert_eq!(report.allowed, vec!["crates/router/src/lib.rs"]);
         assert_eq!(
             report.violations,
-            vec!["src/router/secrets/key.rs", "src/billing.rs"]
+            vec![
+                "crates/router/secrets/key.rs",
+                "crates/service/crates/billing/src/lib.rs"
+            ]
         );
     }
 
     #[test]
     fn normalizes_windows_paths() {
-        let report = policy().evaluate([r"src\router\mod.rs"]);
+        let report = policy().evaluate([r"crates\router\src\lib.rs"]);
         assert!(report.is_ok());
     }
 }
