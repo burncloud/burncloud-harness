@@ -328,7 +328,8 @@ pub fn run_with_observer<O: RunObserver + ?Sized>(
         observer.on_event(RunEvent::Phase {
             attempt,
             phase: RunPhase::Verify,
-            detail: "Running mandatory checks selected from changed paths and active invariants".into(),
+            detail: "Running mandatory checks selected from changed paths and active invariants"
+                .into(),
         })?;
         let active_invariant_ids = active_invariants.ids();
         let checks = plan_checks(&changed_paths, &active_invariant_ids, &task.extra_checks);
