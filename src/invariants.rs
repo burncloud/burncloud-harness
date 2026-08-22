@@ -424,9 +424,6 @@ mod tests {
             items: vec![catalog()[1].clone(), catalog()[4].clone()],
         };
         selected.merge(&incoming);
-        assert_eq!(
-            selected.ids(),
-            vec!["INV-BILLING-001", "INV-ROUTER-001"]
-        );
+        assert_eq!(selected.ids(), vec!["INV-BILLING-001", "INV-ROUTER-001"]);
     }
 }
