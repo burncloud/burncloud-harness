@@ -56,12 +56,7 @@ pub fn build(report: &AnalysisReport, min_count: usize) -> Vec<ImprovementPropos
     let threshold = min_count.max(1);
     let mut proposals = Vec::new();
 
-    collect_hotspots(
-        &mut proposals,
-        "area",
-        &report.failure_by_area,
-        threshold,
-    );
+    collect_hotspots(&mut proposals, "area", &report.failure_by_area, threshold);
     collect_hotspots(
         &mut proposals,
         "changed-domain",
