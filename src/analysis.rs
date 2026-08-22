@@ -66,7 +66,11 @@ impl AnalysisReport {
             &self.invariant_expansions,
         );
         append_ranked(&mut output, "Final-diff risk signals", &self.risk_codes);
-        append_ranked(&mut output, "Failed verification gates", &self.failed_checks);
+        append_ranked(
+            &mut output,
+            "Failed verification gates",
+            &self.failed_checks,
+        );
         append_ranked(&mut output, "Scope violation paths", &self.scope_paths);
 
         let repeated = self.repeated_signals(3);
