@@ -70,7 +70,11 @@ impl AnalysisReport {
 
         append_ranked(&mut output, "Task areas", &self.areas);
         append_ranked(&mut output, "Failure classes", &self.failure_classes);
-        append_ranked(&mut output, "Failure hotspots by area", &self.failure_by_area);
+        append_ranked(
+            &mut output,
+            "Failure hotspots by area",
+            &self.failure_by_area,
+        );
         append_ranked(
             &mut output,
             "Failure hotspots by changed domain",
@@ -265,10 +269,7 @@ fn apply_event(
 
 fn record_failure_hotspots(report: &mut AnalysisReport, context: &RunContext, class: &str) {
     if let Some(area) = context.area.as_deref() {
-        increment(
-            &mut report.failure_by_area,
-            &format!("{area} / {class}"),
-        );
+        increment(&mut report.failure_by_area, &format!("{area} / {class}"));
     }
 
     let domains = context
