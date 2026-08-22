@@ -5,7 +5,11 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 
-use crate::config::TaskSpec;
+use crate::{
+    config::TaskSpec,
+    invariants::InvariantSelection,
+    route::RouteSelection,
+};
 
 pub const REQUIRED_BOOTSTRAP_DOCS: &[&str] = &[
     "AGENTS.md",
@@ -61,6 +65,8 @@ impl BurncloudRepo {
     pub fn control_prompt(
         &self,
         task: &TaskSpec,
+        routes: &RouteSelection,
+        invariants: &InvariantSelection,
         attempt: u32,
         previous_feedback: Option<&str>,
     ) -> String {
@@ -98,6 +104,14 @@ Task area: {area}
 Attempt: {attempt}/{max_loops}
 Goal: {goal}
 
+Harness-selected TASK_ROUTER starting points:
+{routes}
+
+Harness-selected candidate invariants:
+{invariants}
+
+These selections are navigation hints from BurnCloud's current repository docs, not proof. Confirm the real execution path and actual invariant relevance from current source before editing.
+
 Allowed change scope:
 {allowed}
 
@@ -106,9 +120,10 @@ Explicit avoid scope:
 
 Hard rules for this run:
 - Understand current behavior from real BurnCloud source before changing it.
+- Start discovery from the selected TASK_ROUTER rows when they are relevant, then confirm ownership from current source.
 - Trace the smallest relevant execution path before editing runtime behavior.
 - Establish the task contract required by docs/agent/TASK_CONTRACT.md.
-- Preserve relevant invariants from docs/agent/INVARIANTS.md.
+- Explicitly verify the selected candidate invariants and add any additional relevant invariants discovered from the real execution path.
 - Make the smallest coherent change that satisfies the goal.
 - Do not modify anything outside the allowlist.
 - If evidence shows the root cause requires a file outside the allowlist, STOP and report NEED_SCOPE_EXPANSION with the exact file/domain and evidence. Do not edit that file.
@@ -123,6 +138,8 @@ Hard rules for this run:
             attempt = attempt,
             max_loops = task.max_loops,
             goal = task.goal,
+            routes = routes.prompt_text(),
+            invariants = invariants.prompt_text(),
             allowed = allowed,
             avoid = avoid,
             feedback = feedback,
