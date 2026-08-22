@@ -8,6 +8,20 @@ use std::{
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    AgentCommand,
+    GitHistory,
+    ScopeViolation,
+    InvariantExpansion,
+    NoChange,
+    RiskBlock,
+    RiskReview,
+    Verification,
+    MaxLoops,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event<'a> {
@@ -64,6 +78,11 @@ pub enum Event<'a> {
         exit_code: Option<i32>,
         stdout: &'a str,
         stderr: &'a str,
+    },
+    FailureRecorded {
+        attempt: u32,
+        class: FailureClass,
+        detail: &'a str,
     },
     AttemptFailed {
         attempt: u32,
