@@ -130,7 +130,9 @@ fn append_untracked_file(diff: &mut String, root: &std::path::Path, path: &str) 
     let bytes = fs::read(&full)
         .with_context(|| format!("failed to read untracked file {}", full.display()))?;
 
-    diff.push_str(&format!("\ndiff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"));
+    diff.push_str(&format!(
+        "\ndiff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+    ));
 
     match String::from_utf8(bytes) {
         Ok(content) => {
