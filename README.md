@@ -6,26 +6,28 @@
 
 Its job is to make coding agents produce safer, smaller, better-verified changes to BurnCloud by turning the repository's existing agent constitution into executable control.
 
-## v0.1 design
+## Design
 
 BurnCloud already defines the engineering truth an agent must follow in `AGENTS.md` and `docs/agent/`. The harness therefore does not invent a second architecture. It enforces the existing one:
 
 `DISCOVER -> UNDERSTAND -> TRACE -> CONTRACT -> PLAN -> CHANGE -> VERIFY -> INSPECT -> REPORT`
 
-The first version deliberately stays small:
+The project deliberately stays small and BurnCloud-specific:
 
 1. Refuse to run outside a real `burncloud/burncloud` checkout.
-2. Refuse to start from a dirty worktree.
+2. Refuse to start a coding run from a dirty worktree.
 3. Require an explicit task goal and path allowlist.
-4. Inject BurnCloud's repository bootstrap and execution protocol into every agent attempt.
-5. Detect and reject agent commits/history movement.
-6. Inspect the actual git diff after the agent runs.
-7. Fail closed on out-of-scope changes.
-8. Derive mandatory verification from the BurnCloud areas that actually changed.
-9. Feed verification failures back into the next agent attempt.
-10. Store an append-only JSONL trajectory under the checkout's Git metadata, so harness data never becomes repository noise.
+4. Read BurnCloud's current `TASK_ROUTER.md` and select likely source/evidence starting points for the task.
+5. Read BurnCloud's current `INVARIANTS.md` and select candidate invariants from task context.
+6. Inject those repository-derived hints plus BurnCloud's execution protocol into every agent attempt.
+7. Detect and reject agent commits/history movement.
+8. Inspect the actual git diff after the agent runs.
+9. Fail closed on out-of-scope changes.
+10. Derive mandatory verification from the BurnCloud areas that actually changed.
+11. Feed verification failures back into the next agent attempt.
+12. Store an append-only JSONL trajectory under the checkout's Git metadata, so harness data never becomes repository noise.
 
-No graph engine, marketplace, generic plugin system, autonomous harness mutation, or multi-agent swarm is included in v0.1.
+No graph engine, marketplace, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
 
 ## Example task
 
@@ -60,10 +62,25 @@ The allowlist is a hard boundary. `avoid` further narrows it. If source evidence
 
 ```bash
 cargo run -- doctor ../burncloud
+cargo run -- explain --task examples/router-task.yaml
 cargo run -- run --task examples/router-task.yaml
 ```
 
-A successful run prints the changed paths and the trajectory file. Failed verification is automatically fed into the next attempt until `max_loops` is exhausted.
+`explain` is intentionally read-only. It shows which current BurnCloud `TASK_ROUTER` rows and invariant IDs the harness selected before an agent is allowed to edit anything.
+
+A successful `run` prints the changed paths and the trajectory file. Failed verification is automatically fed into the next attempt until `max_loops` is exhausted.
+
+## BurnCloud-aware routing
+
+The task router is not a second hard-coded BurnCloud architecture. The harness parses the target checkout's own `docs/agent/TASK_ROUTER.md`, scores its behavior rows against the task goal and coarse task area, and injects at most the strongest starting points.
+
+These are explicitly treated as navigation hints, not runtime proof. The agent must still confirm the real execution path from current source before editing.
+
+## BurnCloud-aware invariants
+
+The harness parses invariant headings directly from the target checkout's `docs/agent/INVARIANTS.md`. It selects likely invariant families from the task area and routed behavior, for example router, billing, auth, database, runtime, and workspace invariants.
+
+These are candidate invariants. The agent must verify their relevance and discover additional affected invariants from the real execution path.
 
 ## BurnCloud-aware verification
 
@@ -80,4 +97,4 @@ Task-specific checks may be added, but built-in BurnCloud checks cannot be disab
 
 ## What evolves next
 
-The next useful layer is not “more framework.” It is better BurnCloud control: richer task routing, invariant-to-path mapping, deterministic final-diff inspection, and trajectory analysis that tells us which BurnCloud failure patterns should become stronger harness rules.
+The next useful layer is still not “more framework.” It is deeper BurnCloud control: compare selected invariants with the final changed paths, detect semantic diff risks, and analyze trajectories to find repeated BurnCloud failure patterns that deserve stronger deterministic rules.
