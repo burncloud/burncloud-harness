@@ -22,7 +22,11 @@ pub struct CheckResult {
     pub stderr: String,
 }
 
-pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<PlannedCheck> {
+pub fn plan_checks(
+    changed_paths: &[String],
+    invariant_ids: &[String],
+    extra_checks: &[CheckSpec],
+) -> Vec<PlannedCheck> {
     let mut checks = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -109,40 +113,56 @@ pub fn plan_checks(changed_paths: &[String], extra_checks: &[CheckSpec]) -> Vec<
     if changed_paths
         .iter()
         .any(|path| path == "Cargo.toml" || path == "Cargo.lock")
+        || has_invariant_family(invariant_ids, "INV-WORKSPACE-")
     {
         push_unique(
             &mut checks,
             &mut seen,
             "workspace-check",
             "cargo check --workspace",
-            "root workspace dependency/API contract changed",
+            "BurnCloud workspace dependency invariant is in the actual impact set",
         );
     }
 
-    if changed_paths
-        .iter()
-        .any(|path| path.starts_with("crates/server/"))
+    if has_invariant_family(invariant_ids, "INV-RUNTIME-") {
+        push_unique(
+            &mut checks,
+            &mut seen,
+            "server-check",
+            "cargo check -p burncloud-server",
+            "BurnCloud runtime composition invariant is in the actual impact set",
+        );
+    }
+
+    if has_invariant_family(invariant_ids, "INV-ROUTER-") {
+        push_unique(
+            &mut checks,
+            &mut seen,
+            "router-check",
+            "cargo check -p burncloud-router",
+            "BurnCloud router invariant is in the actual impact set",
+        );
+    }
+
+    if has_invariant_family(invariant_ids, "INV-AUTH-")
+        || has_invariant_family(invariant_ids, "INV-INTERNAL-")
     {
         push_unique(
             &mut checks,
             &mut seen,
             "security-invariants",
             "cargo test -p burncloud-server --test security_invariants",
-            "BurnCloud security boundary is protected by a dedicated invariant suite",
+            "BurnCloud auth/internal security invariant is in the actual impact set",
         );
     }
 
-    if changed_paths.iter().any(|path| {
-        path.starts_with("crates/router/")
-            || path.starts_with("crates/database/crates/router/")
-            || path.starts_with("crates/service/crates/router-log/")
-    }) {
+    if has_invariant_family(invariant_ids, "INV-BILLING-") {
         push_unique(
             &mut checks,
             &mut seen,
             "billing-invariants",
             "cargo test -p burncloud-router --test billing_invariants --test quota_tests",
-            "BurnCloud router/billing ownership paths are protected by invariant tests",
+            "BurnCloud billing/quota invariant is in the actual impact set",
         );
     }
 
@@ -174,6 +194,10 @@ pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> 
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+fn has_invariant_family(invariant_ids: &[String], prefix: &str) -> bool {
+    invariant_ids.iter().any(|id| id.starts_with(prefix))
 }
 
 fn push_unique(
@@ -213,8 +237,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn router_change_gets_burncloud_invariant_gate_in_ladder_order() {
-        let checks = plan_checks(&["crates/router/src/lib.rs".into()], &[]);
+    fn router_change_gets_router_and_billing_gates_from_impact() {
+        let checks = plan_checks(
+            &["crates/router/src/lib.rs".into()],
+            &["INV-ROUTER-001".into(), "INV-BILLING-001".into()],
+            &[],
+        );
         let names = checks
             .iter()
             .map(|check| check.name.as_str())
@@ -223,8 +251,18 @@ mod tests {
     }
 
     #[test]
-    fn docs_only_change_does_not_invent_build_checks() {
-        let checks = plan_checks(&["docs/agent/README.md".into()], &[]);
+    fn auth_invariant_adds_security_suite_even_for_non_api_path() {
+        let checks = plan_checks(
+            &["docs/agent/INVARIANTS.md".into()],
+            &["INV-AUTH-002".into()],
+            &[],
+        );
+        assert_eq!(checks[0].name, "security-invariants");
+    }
+
+    #[test]
+    fn docs_only_change_without_invariant_impact_does_not_invent_build_checks() {
+        let checks = plan_checks(&["docs/agent/README.md".into()], &[], &[]);
         assert!(checks.is_empty());
     }
 }

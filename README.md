@@ -23,19 +23,40 @@ The project deliberately stays small and BurnCloud-specific:
 7. Detect and reject agent commits/history movement.
 8. Inspect the actual git diff after the agent runs.
 9. Fail closed on out-of-scope changes.
-10. Derive mandatory verification from the BurnCloud areas that actually changed.
-11. Feed verification failures back into the next agent attempt.
-12. Store an append-only JSONL trajectory under the checkout's Git metadata, so harness data never becomes repository noise.
+10. Recompute invariant impact from the actual changed paths; if the diff touches an invariant family that was not in the pre-change contract, force another review loop with the expanded invariant set.
+11. Derive mandatory verification from both actual BurnCloud paths and the active invariant set.
+12. Feed verification failures back into the next agent attempt.
+13. Store an append-only JSONL trajectory under the checkout's Git metadata, so harness data never becomes repository noise.
 
 No graph engine, marketplace, generic plugin system, autonomous harness mutation, or multi-agent swarm is included.
 
-## First BurnCloud intelligence layer
+## BurnCloud control loop
 
-The harness should not carry a stale private copy of BurnCloud architecture. Its first intelligence layer is deliberately source-derived:
+The harness deliberately distinguishes prediction from reality:
 
-`task goal -> current TASK_ROUTER.md -> candidate source/evidence -> current INVARIANTS.md -> candidate invariants -> agent trace -> actual diff -> mandatory verification`
+`task goal -> current TASK_ROUTER.md -> candidate invariants -> agent trace -> actual git diff -> invariant impact -> verification -> PASS / feedback`
 
-The harness only chooses where the agent should start looking. Current source code remains the authority for what is actually true.
+Pre-change routing only predicts what matters. After the agent edits code, the actual changed paths can expand the invariant contract. That expansion cannot be silently ignored.
+
+Example:
+
+```text
+Goal: fix router retry
+Pre-change invariants: INV-ROUTER-*
+
+Actual diff:
+  crates/router/src/lib.rs
+
+Post-change impact:
+  INV-ROUTER-*
+  INV-BILLING-*
+
+Harness response:
+  require another agent review loop with billing invariants visible
+  then run router compilation + billing/quota invariant tests
+```
+
+This is intentional: BurnCloud's real diff is stronger evidence than the harness's initial guess.
 
 ## Example task
 
@@ -76,7 +97,7 @@ cargo run -- run --task examples/router-task.yaml
 
 `explain` is intentionally read-only. It shows which current BurnCloud `TASK_ROUTER` rows and invariant IDs the harness selected before an agent is allowed to edit anything.
 
-A successful `run` prints the changed paths and the trajectory file. Failed verification is automatically fed into the next attempt until `max_loops` is exhausted.
+A successful `run` prints the changed paths and the trajectory file. Failed verification or newly discovered invariant impact is automatically fed into the next attempt until `max_loops` is exhausted.
 
 ## BurnCloud-aware routing
 
@@ -86,23 +107,44 @@ These are explicitly treated as navigation hints, not runtime proof. The agent m
 
 ## BurnCloud-aware invariants
 
-The harness parses invariant headings directly from the target checkout's `docs/agent/INVARIANTS.md`. It selects likely invariant families from the task area and routed behavior, for example router, billing, auth, database, runtime, and workspace invariants.
+The harness parses invariant headings directly from the target checkout's `docs/agent/INVARIANTS.md`. It selects likely invariant families from the task area and routed behavior, then reassesses the actual diff against high-value BurnCloud ownership paths.
 
-These are candidate invariants. The agent must verify their relevance and discover additional affected invariants from the real execution path.
+Current post-change mappings intentionally cover the strongest documented invariant boundaries first:
+
+- `src/main.rs` -> runtime startup invariants
+- `crates/server/src/lib.rs` -> runtime, router composition, and auth boundary invariants
+- `crates/server/src/api/**` -> auth invariants
+- `crates/server/src/api/auth.rs` -> auth + internal-control invariants
+- `crates/router/src/**` -> router invariants
+- `crates/router/src/lib.rs` -> router + billing invariants
+- router token/quota implementation and invariant tests -> billing invariants
+- `crates/database/src/placeholder.rs` -> database placeholder invariant
+- root `Cargo.toml` / `Cargo.lock` -> workspace dependency invariants
+
+This map should only grow when BurnCloud source/docs provide strong evidence for a stable boundary.
 
 ## BurnCloud-aware verification
 
-The harness reads the changed paths and adds repository-specific checks. Examples:
+Verification is now driven by both the changed paths and active invariant IDs. Examples:
 
 - Rust changes -> `cargo fmt --check`
-- `crates/router/**` -> `cargo check -p burncloud-router`
-- `crates/server/**` -> `cargo check -p burncloud-server`
-- server changes -> `security_invariants`
-- router / router-database / router-log changes -> `billing_invariants` + `quota_tests`
-- root `Cargo.toml` / `Cargo.lock` -> `cargo check --workspace`
+- router impact -> `cargo check -p burncloud-router`
+- runtime impact -> `cargo check -p burncloud-server`
+- auth/internal impact -> `cargo test -p burncloud-server --test security_invariants`
+- billing impact -> `cargo test -p burncloud-router --test billing_invariants --test quota_tests`
+- workspace dependency impact -> `cargo check --workspace`
 
 Task-specific checks may be added, but built-in BurnCloud checks cannot be disabled by the task file.
 
+## Trajectory
+
+Every run records the pre-change route/invariant selection and the post-change invariant impact. This gives later harness evolution a factual dataset for questions such as:
+
+- which tasks repeatedly expand beyond their predicted invariant set,
+- which BurnCloud files create the most cross-domain impact,
+- which invariant gates catch regressions most often,
+- where task routing or scope definitions should become stronger.
+
 ## What evolves next
 
-The next useful layer is still not “more framework.” It is deeper BurnCloud control: compare selected invariants with the final changed paths, detect semantic diff risks, and analyze trajectories to find repeated BurnCloud failure patterns that deserve stronger deterministic rules.
+The next useful layer is still not “more framework.” It is deterministic final-diff risk inspection: detect suspicious semantic changes such as weakened assertions, removed authorization checks, deleted error handling, or broad refactors that are inconsistent with the declared task contract, then record those failures as trajectory data.

@@ -45,6 +45,12 @@ pub enum Event<'a> {
         changed_paths: &'a [String],
         violations: &'a [String],
     },
+    InvariantImpactAssessed {
+        attempt: u32,
+        required: &'a [String],
+        newly_required: &'a [String],
+        reasons: &'a [String],
+    },
     CheckFinished {
         attempt: u32,
         name: &'a str,
