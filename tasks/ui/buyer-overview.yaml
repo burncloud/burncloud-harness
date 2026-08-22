@@ -1,20 +1,10 @@
 name: ui-buyer-overview-v1
 
 goal: |
-  Rebuild the BurnCloud Buyer Overview according to the approved UI target
-  contracts in docs/ui/.
+  Rebuild the BurnCloud Buyer Overview according to the approved external UI
+  target contracts declared in context_files.
 
-  Required target documents:
-  - docs/ui/product-standard.md
-  - docs/ui/information-architecture.md
-  - docs/ui/page-contracts/buyer-overview.md
-  - docs/ui/design-system.md
-  - docs/ui/interaction-rules.md
-  - docs/ui/content-standard.md
-  - docs/ui/review-checklist.md
-  - docs/ui/agent-execution.md
-
-  Treat these documents as TARGET truth, not current implementation truth.
+  Treat those documents as TARGET truth, not current implementation truth.
 
   First inspect the current BurnCloud client implementation and determine the
   actual Buyer Overview route, components, data sources, and existing UI
@@ -32,14 +22,14 @@ area: ui
 max_loops: 5
 
 context_files:
-  - ../../docs/ui/product-standard.md
-  - ../../docs/ui/information-architecture.md
-  - ../../docs/ui/page-contracts/buyer-overview.md
-  - ../../docs/ui/design-system.md
-  - ../../docs/ui/interaction-rules.md
-  - ../../docs/ui/content-standard.md
-  - ../../docs/ui/review-checklist.md
-  - ../../docs/ui/agent-execution.md
+  - ../../../burncloud-workbench/docs/ui/product-standard.md
+  - ../../../burncloud-workbench/docs/ui/information-architecture.md
+  - ../../../burncloud-workbench/docs/ui/page-contracts/buyer-overview.md
+  - ../../../burncloud-workbench/docs/ui/design-system.md
+  - ../../../burncloud-workbench/docs/ui/interaction-rules.md
+  - ../../../burncloud-workbench/docs/ui/content-standard.md
+  - ../../../burncloud-workbench/docs/ui/review-checklist.md
+  - ../../../burncloud-workbench/docs/ui/agent-execution.md
 
 scope:
   allowed:
