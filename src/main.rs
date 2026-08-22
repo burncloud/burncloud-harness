@@ -1,3 +1,4 @@
+mod analysis;
 mod burncloud;
 mod checks;
 mod config;
@@ -35,6 +36,13 @@ enum Commands {
         #[arg(short, long)]
         task: PathBuf,
     },
+    /// Summarize recent BurnCloud harness trajectories without changing policy.
+    Analyze {
+        #[arg(default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
     /// Run one bounded coding task against a clean BurnCloud worktree.
     Run {
         #[arg(short, long)]
@@ -56,6 +64,7 @@ fn main() -> Result<()> {
             );
         }
         Commands::Explain { task } => explain_task(TaskSpec::load(task)?)?,
+        Commands::Analyze { workspace, limit } => analyze_workspace(workspace, limit)?,
         Commands::Run { task } => {
             let task = TaskSpec::load(task)?;
             let summary = runner::run(task)?;
@@ -90,5 +99,16 @@ fn explain_task(task: TaskSpec) -> Result<()> {
         println!("\nAvoid scope:\n- {}", task.scope.avoid.join("\n- "));
     }
 
+    Ok(())
+}
+
+fn analyze_workspace(workspace: PathBuf, limit: usize) -> Result<()> {
+    let workspace = workspace.canonicalize()?;
+    let burncloud = burncloud::BurncloudRepo::open(workspace.as_path())?;
+    let git = git::GitRepo::new(burncloud.root());
+    git.ensure_repository()?;
+    let state_dir = git.harness_state_dir()?;
+    let report = analysis::analyze(&state_dir, limit)?;
+    print!("{}", report.render());
     Ok(())
 }
