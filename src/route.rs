@@ -91,13 +91,29 @@ fn parse_row(line: &str) -> Option<RouteRow> {
 fn select(rows: Vec<RouteRow>, goal: &str, area: BurncloudArea) -> RouteSelection {
     let goal_tokens = tokens(goal);
     let area_tokens = area_tokens(area);
-    let mut scored = rows
+
+    let mut candidates = rows
         .into_iter()
         .map(|row| {
             let behavior_tokens = tokens(&row.behavior);
             let goal_overlap = behavior_tokens.intersection(&goal_tokens).count();
             let area_overlap = behavior_tokens.intersection(&area_tokens).count();
-            let score = goal_overlap * 4 + area_overlap;
+            (area_overlap, goal_overlap, row)
+        })
+        .collect::<Vec<_>>();
+
+    // A declared task area is an ownership boundary, not a weak hint. If the
+    // repository router contains rows that match the area, do not let words in
+    // a long goal (for example "routing", "admin", or "token" in UI product
+    // copy) pull unrelated backend rows into the candidate set.
+    if !area_tokens.is_empty() && candidates.iter().any(|(area, _, _)| *area > 0) {
+        candidates.retain(|(area, _, _)| *area > 0);
+    }
+
+    let mut scored = candidates
+        .into_iter()
+        .map(|(area_overlap, goal_overlap, row)| {
+            let score = area_overlap * 8 + goal_overlap * 4;
             (score, row)
         })
         .filter(|(score, _)| *score > 0)
@@ -179,6 +195,7 @@ mod tests {
 | Data-plane request entry, fallback routing | `crates/router/src/lib.rs` | `crates/server/src/lib.rs` | `relay.rs` |
 | Provider passthrough / conversion / retry | `crates/router/src/lib.rs`, `passthrough.rs` | provider adapters | provider tests |
 | Billing / cost / quota settlement | `crates/router/src/lib.rs` | billing crates | billing tests |
+| UI / Console page behavior | affected crate under `crates/client/crates/` | `crates/client` shared components/routes | console page tests |
 "#;
 
     #[test]
@@ -207,5 +224,17 @@ mod tests {
             .rows
             .iter()
             .any(|row| row.behavior.contains("fallback routing")));
+    }
+
+    #[test]
+    fn ui_area_does_not_route_product_copy_to_backend_rows() {
+        let selection = select(
+            parse_rows(ROUTER),
+            "Rebuild Buyer Overview without exposing routing topology, admin internals, or API token infrastructure",
+            BurncloudArea::Ui,
+        );
+
+        assert_eq!(selection.rows.len(), 1);
+        assert_eq!(selection.rows[0].behavior, "UI / Console page behavior");
     }
 }
