@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf, process::Command};
+use std::{collections::BTreeSet, fs, path::PathBuf, process::Command};
 
 use anyhow::{bail, Context, Result};
 
@@ -55,17 +55,16 @@ impl GitRepo {
         if !tracked.status.success() {
             bail!("git diff failed: {}", tracked.stderr.trim());
         }
-        let untracked = self.git(["ls-files", "--others", "--exclude-standard"])?;
-        if !untracked.status.success() {
-            bail!("git ls-files failed: {}", untracked.stderr.trim());
-        }
 
         let mut paths = BTreeSet::new();
-        for line in tracked.stdout.lines().chain(untracked.stdout.lines()) {
-            let path = line.trim();
+        for line in tracked.stdout.lines() {
+            let path = normalize_path(line);
             if !path.is_empty() {
-                paths.insert(path.replace('\\', "/"));
+                paths.insert(path);
             }
+        }
+        for path in self.untracked_paths()? {
+            paths.insert(path);
         }
         Ok(paths.into_iter().collect())
     }
@@ -75,7 +74,12 @@ impl GitRepo {
         if !output.status.success() {
             bail!("git diff failed: {}", output.stderr.trim());
         }
-        Ok(output.stdout)
+
+        let mut diff = output.stdout;
+        for path in self.untracked_paths()? {
+            append_untracked_file(&mut diff, &self.root, &path)?;
+        }
+        Ok(diff)
     }
 
     pub fn harness_state_dir(&self) -> Result<PathBuf> {
@@ -92,6 +96,20 @@ impl GitRepo {
         Ok(git_dir.join("burncloud-harness"))
     }
 
+    fn untracked_paths(&self) -> Result<Vec<String>> {
+        let output = self.git(["ls-files", "--others", "--exclude-standard"])?;
+        if !output.status.success() {
+            bail!("git ls-files failed: {}", output.stderr.trim());
+        }
+
+        Ok(output
+            .stdout
+            .lines()
+            .map(normalize_path)
+            .filter(|path| !path.is_empty())
+            .collect())
+    }
+
     fn git<const N: usize>(&self, args: [&str; N]) -> Result<CommandOutput> {
         let output = Command::new("git")
             .args(args)
@@ -105,6 +123,33 @@ impl GitRepo {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
+}
+
+fn append_untracked_file(diff: &mut String, root: &std::path::Path, path: &str) -> Result<()> {
+    let full = root.join(path);
+    let bytes = fs::read(&full)
+        .with_context(|| format!("failed to read untracked file {}", full.display()))?;
+
+    diff.push_str(&format!("\ndiff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"));
+
+    match String::from_utf8(bytes) {
+        Ok(content) => {
+            let line_count = content.lines().count();
+            diff.push_str(&format!("@@ -0,0 +1,{line_count} @@\n"));
+            for line in content.lines() {
+                diff.push('+');
+                diff.push_str(line);
+                diff.push('\n');
+            }
+        }
+        Err(_) => diff.push_str("Binary files /dev/null and b/untracked differ\n"),
+    }
+
+    Ok(())
+}
+
+fn normalize_path(path: &str) -> String {
+    path.trim().replace('\\', "/")
 }
 
 struct CommandOutput {
