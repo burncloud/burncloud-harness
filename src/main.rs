@@ -3,6 +3,8 @@ mod burncloud;
 mod checks;
 mod config;
 mod console;
+mod event_writer;
+mod events;
 mod git;
 mod invariants;
 mod observer;
@@ -29,24 +31,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Validate a BurnCloud checkout and its required agent-control documents.
     Doctor {
         #[arg(default_value = ".")]
         workspace: PathBuf,
     },
-    /// Show how the harness routes a task before allowing an agent to edit code.
     Explain {
         #[arg(short, long)]
         task: PathBuf,
     },
-    /// Summarize recent BurnCloud harness trajectories without changing policy.
     Analyze {
         #[arg(default_value = ".")]
         workspace: PathBuf,
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
-    /// Turn repeated trajectory hotspots into read-only Harness improvement proposals.
     Recommend {
         #[arg(default_value = ".")]
         workspace: PathBuf,
@@ -55,17 +53,13 @@ enum Commands {
         #[arg(long, default_value_t = 3)]
         min_count: usize,
     },
-    /// Run one bounded coding task against a clean or explicitly resumed worktree.
     Run {
         #[arg(short, long)]
         task: PathBuf,
-        /// Show the Harness boundaries and evidence-driven Loop in a Ratatui console.
         #[arg(long)]
         tui: bool,
-        /// Continue existing in-scope changes left by an interrupted Harness run.
         #[arg(long, conflicts_with = "tui")]
         resume: bool,
-        /// Run deterministic gates on resumed changes without starting another agent.
         #[arg(long, requires = "resume", conflicts_with = "tui")]
         verify_existing: bool,
     },
