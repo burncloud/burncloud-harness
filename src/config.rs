@@ -75,8 +75,9 @@ impl TaskSpec {
         let path = path.as_ref();
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read task file {}", path.display()))?;
-        let task: Self = serde_yaml::from_str(&raw)
+        let mut task: Self = serde_yaml::from_str(&raw)
             .with_context(|| format!("failed to parse task file {}", path.display()))?;
+        task.normalize_agent_compatibility();
         task.validate()?;
         Ok(task)
     }
@@ -104,6 +105,43 @@ impl TaskSpec {
         }
         Ok(())
     }
+
+    fn normalize_agent_compatibility(&mut self) {
+        if !is_codex_program(&self.agent.program)
+            || !self.agent.args.iter().any(|arg| arg == "--full-auto")
+        {
+            return;
+        }
+
+        let already_has_sandbox = self
+            .agent
+            .args
+            .iter()
+            .any(|arg| arg == "--sandbox" || arg.starts_with("--sandbox="));
+        let mut normalized = Vec::with_capacity(self.agent.args.len() + 1);
+        let mut inserted_workspace_write = false;
+
+        for arg in &self.agent.args {
+            if arg == "--full-auto" {
+                if !already_has_sandbox && !inserted_workspace_write {
+                    normalized.push("--sandbox".to_owned());
+                    normalized.push("workspace-write".to_owned());
+                    inserted_workspace_write = true;
+                }
+                continue;
+            }
+            normalized.push(arg.clone());
+        }
+
+        self.agent.args = normalized;
+    }
+}
+
+fn is_codex_program(program: &str) -> bool {
+    Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("codex"))
 }
 
 fn default_workspace() -> String {
@@ -143,5 +181,66 @@ mod tests {
         };
 
         assert!(task.validate().is_err());
+    }
+
+    #[test]
+    fn migrates_legacy_codex_full_auto_to_workspace_write() {
+        let mut task = TaskSpec {
+            name: "test".into(),
+            goal: "do something".into(),
+            workspace: ".".into(),
+            max_loops: 1,
+            area: BurncloudArea::Ui,
+            scope: ScopeSpec {
+                allowed: vec!["crates/client/**".into()],
+                avoid: vec![],
+            },
+            agent: AgentSpec {
+                program: "codex".into(),
+                args: vec!["exec".into(), "--full-auto".into()],
+                append_prompt: true,
+            },
+            extra_checks: vec![],
+        };
+
+        task.normalize_agent_compatibility();
+
+        assert_eq!(
+            task.agent.args,
+            vec!["exec", "--sandbox", "workspace-write"]
+        );
+    }
+
+    #[test]
+    fn preserves_explicit_codex_sandbox_when_removing_full_auto() {
+        let mut task = TaskSpec {
+            name: "test".into(),
+            goal: "do something".into(),
+            workspace: ".".into(),
+            max_loops: 1,
+            area: BurncloudArea::Ui,
+            scope: ScopeSpec {
+                allowed: vec!["crates/client/**".into()],
+                avoid: vec![],
+            },
+            agent: AgentSpec {
+                program: "codex".into(),
+                args: vec![
+                    "exec".into(),
+                    "--full-auto".into(),
+                    "--sandbox".into(),
+                    "danger-full-access".into(),
+                ],
+                append_prompt: true,
+            },
+            extra_checks: vec![],
+        };
+
+        task.normalize_agent_compatibility();
+
+        assert_eq!(
+            task.agent.args,
+            vec!["exec", "--sandbox", "danger-full-access"]
+        );
     }
 }
