@@ -12,6 +12,7 @@ mod policy;
 mod proposal;
 mod risk;
 mod route;
+mod run_history;
 mod runner;
 mod trajectory;
 mod tui;
@@ -32,7 +33,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Tui,
+    Tui {
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long)]
+        list: bool,
+    },
     Doctor {
         #[arg(default_value = ".")]
         workspace: PathBuf,
@@ -71,7 +77,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Tui => tui::run()?,
+        Commands::Tui { run, list } => {
+            if list {
+                tui::list_runs()?;
+            } else {
+                tui::run(run.as_deref())?;
+            }
+        }
         Commands::Doctor { workspace } => {
             let workspace = workspace.canonicalize()?;
             burncloud::BurncloudRepo::open(workspace.as_path())?;
