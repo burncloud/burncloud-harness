@@ -34,23 +34,30 @@ impl EventWriter {
     }
 
     pub fn append(&self, event: &HarnessEvent) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let sequence = self.next_sequence();
         let line = serde_json::to_string(&EventRecord::new(event, sequence))?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-
-        writeln!(file, "{line}")?;
-        Ok(())
+        self.append_line(&line)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn next_sequence(&self) -> u64 {
+        self.sequence.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn append_line(&self, line: &str) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        writeln!(file, "{line}")?;
+        Ok(())
     }
 }
 
@@ -96,8 +103,12 @@ impl RunEventWriter {
     }
 
     pub fn append(&self, event: &HarnessEvent) -> Result<()> {
-        self.primary.append(event)?;
-        self.latest.append(event)?;
+        // The run file and `latest` are mirrors of the same factual stream.
+        // Generate sequence/timestamp once so both files contain byte-identical records.
+        let sequence = self.primary.next_sequence();
+        let line = serde_json::to_string(&EventRecord::new(event, sequence))?;
+        self.primary.append_line(&line)?;
+        self.latest.append_line(&line)?;
         Ok(())
     }
 
