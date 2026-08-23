@@ -83,6 +83,11 @@ impl BurncloudRepo {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let change_budget = task
+            .scope
+            .max_changed_files
+            .map(|limit| format!("- Maximum changed files: {limit}"))
+            .unwrap_or_else(|| "- Maximum changed files: not separately capped".to_owned());
         let context_files = task.context_prompt_text();
         let feedback = previous_feedback
             .map(|value| format!("\nPrevious harness feedback:\n{value}\n"))
@@ -120,6 +125,9 @@ Allowed change scope:
 Explicit avoid scope:
 {avoid}
 
+Change budget:
+{change_budget}
+
 Hard rules for this run:
 - Understand current behavior from real BurnCloud source before changing it.
 - Start discovery from the selected TASK_ROUTER rows when they are relevant, then confirm ownership from current source.
@@ -128,6 +136,7 @@ Hard rules for this run:
 - Explicitly verify the selected candidate invariants and add any additional relevant invariants discovered from the real execution path.
 - Make the smallest coherent change that satisfies the goal.
 - Do not modify anything outside the allowlist.
+- Treat the declared changed-file budget as a hard boundary. Plan within it, count the real changed files before finishing, and if correct implementation requires exceeding it, STOP and report NEED_SCOPE_EXPANSION instead of broadening the diff.
 - If evidence shows the root cause requires a file outside the allowlist, STOP and report NEED_SCOPE_EXPANSION with the exact file/domain and evidence. Do not edit that file.
 - Do not weaken, delete, skip, or ignore tests to make the task green.
 - Do not commit, push, merge, reset, clean, or rewrite git history.
@@ -145,6 +154,7 @@ Hard rules for this run:
             invariants = invariants.prompt_text(),
             allowed = allowed,
             avoid = avoid,
+            change_budget = change_budget,
             feedback = feedback,
         )
     }
