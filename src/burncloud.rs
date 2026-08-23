@@ -152,6 +152,18 @@ Time-budget behavior:
 - The hard limit is enforced by burncloud-harness. Do not wait until the final minute to save or organize edits.
 - An idle warning means the harness has seen no agent output for the configured interval. Treat it as a signal to unblock or simplify the current approach.
 - If the hard limit ends the process, the existing worktree is preserved and the next Harness attempt will continue from the real diff. Do not intentionally restart from scratch on later attempts.
+
+Change-explanation protocol for the live Harness observer:
+- This protocol is concise engineering reporting, not chain-of-thought. Never expose private/internal reasoning; report only the concrete task evidence and intended engineering effect.
+- Immediately before modifying a file, emit exactly one plain-text line with no Markdown fence:
+  HARNESS_CHANGE_INTENT {{"path":"repo/relative/path","reason":"concrete source, feedback, invariant, or verification reason","delta":"specific mismatch or defect this edit is intended to close"}}
+- After completing a coherent edit to that file, emit exactly one plain-text line with no Markdown fence:
+  HARNESS_CHANGE_RESULT {{"path":"repo/relative/path","summary":"what materially changed in the file and user-visible/runtime effect","validation":"specific check or comparison that should prove this edit"}}
+- Use repository-relative paths and keep each field concise and factual.
+- `reason` must answer why this file is the correct owner for the active task/delta; `delta` must identify the concrete remaining mismatch or failure.
+- `summary` must explain the actual edit, not merely say "updated file"; `validation` must name the next meaningful verification.
+- If the same file is edited later for a materially different reason, emit a new intent/result pair.
+- Do not emit these markers for read-only inspection. They are only for real intended edits.
 {convergence}
 Hard rules for this run:
 - Understand current behavior from real BurnCloud source before changing it.
