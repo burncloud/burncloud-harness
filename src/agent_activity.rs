@@ -151,11 +151,7 @@ mod tests {
 
     #[test]
     fn suppresses_source_code_dump() {
-        assert!(curate(
-            "stderr",
-            r#"<div className=\"flex items-center gap-2\">"#
-        )
-        .is_none());
+        assert!(curate("stderr", r#"<div className=\"flex items-center gap-2\">"#).is_none());
         assert!(curate("stderr", "use dioxus::prelude::*;").is_none());
     }
 
@@ -166,11 +162,7 @@ mod tests {
 
     #[test]
     fn keeps_real_powershell_error() {
-        let line = curate(
-            "stderr",
-            "FullyQualifiedErrorId : MethodNotFound",
-        )
-        .unwrap();
+        let line = curate("stderr", "FullyQualifiedErrorId : MethodNotFound").unwrap();
         assert_eq!(line.stream, "stderr");
         assert!(line.line.contains("MethodNotFound"));
     }
