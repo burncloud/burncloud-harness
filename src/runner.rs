@@ -135,6 +135,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
 
     for attempt in 1..=attempt_limit {
         trajectory.record(Event::AttemptStarted { attempt })?;
+        record_phase_start(&mut trajectory, attempt, RunPhase::Agent)?;
         observer.on_event(RunEvent::Phase {
             attempt,
             phase: RunPhase::Agent,
@@ -172,6 +173,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             stderr: &agent_result.stderr,
         })?;
 
+        record_phase_start(&mut trajectory, attempt, RunPhase::Scope)?;
         observer.on_event(RunEvent::Phase {
             attempt,
             phase: RunPhase::Scope,
@@ -254,6 +256,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         }
 
         if !changed_paths.is_empty() {
+            record_phase_start(&mut trajectory, attempt, RunPhase::Invariants)?;
             observer.on_event(RunEvent::Phase {
                 attempt,
                 phase: RunPhase::Invariants,
@@ -340,6 +343,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             continue;
         }
 
+        record_phase_start(&mut trajectory, attempt, RunPhase::Risk)?;
         observer.on_event(RunEvent::Phase {
             attempt,
             phase: RunPhase::Risk,
@@ -402,6 +406,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             continue;
         }
 
+        record_phase_start(&mut trajectory, attempt, RunPhase::Verify)?;
         observer.on_event(RunEvent::Phase {
             attempt,
             phase: RunPhase::Verify,
@@ -413,6 +418,10 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         let mut failed = Vec::new();
 
         for check in checks {
+            trajectory.record(Event::CheckStarted {
+                attempt,
+                name: &check.name,
+            })?;
             observer.on_event(RunEvent::Check {
                 attempt,
                 name: check.name.clone(),
@@ -506,6 +515,17 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         trajectory_path: trajectory.path().to_path_buf(),
     })?;
     bail!("{detail}; trajectory: {}", trajectory.path().display())
+}
+
+fn record_phase_start(
+    trajectory: &mut TrajectoryWriter,
+    attempt: u32,
+    phase: RunPhase,
+) -> Result<()> {
+    trajectory.record(Event::PhaseStarted {
+        attempt,
+        phase: phase.as_str(),
+    })
 }
 
 fn select_resume_provenance(
