@@ -1,8 +1,10 @@
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, Context, Result};
@@ -36,7 +38,15 @@ struct FailureObservation {
     consecutive: u32,
 }
 
+#[derive(Debug, Clone)]
+struct BaselineObservation {
+    head: String,
+    failure_signature: Option<String>,
+}
+
 static FAILURE_OBSERVATIONS: OnceLock<Mutex<HashMap<String, FailureObservation>>> = OnceLock::new();
+static BASELINE_OBSERVATIONS: OnceLock<Mutex<HashMap<String, BaselineObservation>>> =
+    OnceLock::new();
 
 pub fn plan_checks(
     changed_paths: &[String],
@@ -208,6 +218,62 @@ pub fn plan_checks(
 }
 
 pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> {
+    let result = execute_check(workspace, check, None)?;
+
+    if result.success {
+        clear_failure_observation(workspace, &check.name);
+        return Ok(result);
+    }
+
+    let signature = failure_signature(
+        &check.name,
+        result.exit_code,
+        &result.stderr,
+        &result.stdout,
+    );
+
+    match baseline_observation(workspace, check) {
+        Ok(baseline) if baseline.failure_signature.as_deref() == Some(signature.as_str()) => {
+            clear_failure_observation(workspace, &check.name);
+            let evidence = compact_diagnostic(&result.stderr, &result.stdout);
+            bail!(
+                "BASELINE_BLOCKER: mandatory check '{}' failed with signature {} in the current worktree and failed with the identical signature on clean HEAD {}. BurnCloud Harness attributes this failure to the repository baseline/dependency/environment rather than the current diff. The current worktree is preserved and no additional Agent loop will be spent trying to fix this unchanged baseline failure. Diagnose the blocker separately, then continue with --resume.\n{}",
+                check.name,
+                signature,
+                baseline.head,
+                evidence
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                check = %check.name,
+                error = %error,
+                "baseline attribution probe failed; falling back to repeated-failure protection"
+            );
+        }
+    }
+
+    let consecutive = observe_failure(workspace, &check.name, &signature);
+    if consecutive >= REPEATED_FAILURE_LIMIT {
+        let evidence = compact_diagnostic(&result.stderr, &result.stdout);
+        bail!(
+            "REPEATED_UNCHANGED_FAILURE: mandatory check '{}' produced the same failure signature {} for {} consecutive verification passes, and clean-HEAD attribution did not prove it is the same baseline failure. BurnCloud Harness stopped before spending another Agent loop. The current worktree is preserved. Diagnose the unchanged root cause, then continue with --resume.\n{}",
+            check.name,
+            signature,
+            consecutive,
+            evidence
+        );
+    }
+
+    Ok(result)
+}
+
+fn execute_check(
+    workspace: &Path,
+    check: &PlannedCheck,
+    shared_target_dir: Option<&Path>,
+) -> Result<CheckResult> {
     let mut command = if let Some(argv) = &check.argv {
         let mut command = Command::new(&argv[0]);
         command.args(&argv[1..]);
@@ -215,42 +281,156 @@ pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> 
     } else {
         shell_command(&check.command)
     };
+    command.current_dir(workspace);
+    if let Some(target_dir) = shared_target_dir {
+        command.env("CARGO_TARGET_DIR", target_dir);
+    }
+
     let output = command
-        .current_dir(workspace)
         .output()
         .with_context(|| format!("failed to execute check '{}'", check.name))?;
-
-    let success = output.status.success();
-    let exit_code = output.status.code();
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-
-    if success {
-        clear_failure_observation(workspace, &check.name);
-    } else {
-        let signature = failure_signature(&check.name, exit_code, &stderr, &stdout);
-        let consecutive = observe_failure(workspace, &check.name, &signature);
-        if consecutive >= REPEATED_FAILURE_LIMIT {
-            let evidence = compact_diagnostic(&stderr, &stdout);
-            bail!(
-                "REPEATED_UNCHANGED_FAILURE: mandatory check '{}' produced the same failure signature {} for {} consecutive verification passes. BurnCloud Harness stopped before spending another Agent loop. The current worktree is preserved. Treat this as a likely baseline/dependency/environment blocker or an unchanged root cause; diagnose the blocker, then continue with --resume.\n{}",
-                check.name,
-                signature,
-                consecutive,
-                evidence
-            );
-        }
-    }
 
     Ok(CheckResult {
         name: check.name.clone(),
         command: check.command.clone(),
         reason: check.reason.clone(),
-        success,
-        exit_code,
-        stdout,
-        stderr,
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+fn baseline_observation(workspace: &Path, check: &PlannedCheck) -> Result<BaselineObservation> {
+    let head = git_stdout(workspace, &["rev-parse", "HEAD"])?;
+    let cache_key = format!("{}::{head}::{}", workspace.display(), check.name);
+    if let Some(observation) = baseline_cache_get(&cache_key) {
+        return Ok(observation);
+    }
+
+    let baseline_dir = baseline_worktree_path();
+    add_detached_worktree(workspace, &baseline_dir, &head)?;
+
+    let shared_target_dir = workspace.join("target");
+    let probe = execute_check(&baseline_dir, check, Some(&shared_target_dir));
+    let cleanup = remove_detached_worktree(workspace, &baseline_dir);
+    if let Err(error) = cleanup {
+        tracing::warn!(
+            path = %baseline_dir.display(),
+            error = %error,
+            "failed to remove temporary baseline worktree"
+        );
+    }
+
+    let result = probe?;
+    let failure_signature = if result.success {
+        None
+    } else {
+        Some(failure_signature(
+            &check.name,
+            result.exit_code,
+            &result.stderr,
+            &result.stdout,
+        ))
+    };
+    let observation = BaselineObservation {
+        head,
+        failure_signature,
+    };
+    baseline_cache_insert(cache_key, observation.clone());
+    Ok(observation)
+}
+
+fn baseline_cache_get(key: &str) -> Option<BaselineObservation> {
+    let observations = BASELINE_OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let observations = observations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    observations.get(key).cloned()
+}
+
+fn baseline_cache_insert(key: String, observation: BaselineObservation) {
+    let observations = BASELINE_OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut observations = observations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    observations.insert(key, observation);
+}
+
+fn baseline_worktree_path() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "burncloud-harness-baseline-{}-{unique}",
+        std::process::id()
+    ))
+}
+
+fn add_detached_worktree(workspace: &Path, destination: &Path, head: &str) -> Result<()> {
+    if destination.exists() {
+        fs::remove_dir_all(destination).with_context(|| {
+            format!(
+                "failed to clear stale baseline worktree {}",
+                destination.display()
+            )
+        })?;
+    }
+    let output = Command::new("git")
+        .args(["worktree", "add", "--detach", "--force"])
+        .arg(destination)
+        .arg(head)
+        .current_dir(workspace)
+        .output()
+        .context("failed to create temporary clean-HEAD worktree for baseline attribution")?;
+    if !output.status.success() {
+        bail!(
+            "git worktree add failed for baseline attribution: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn remove_detached_worktree(workspace: &Path, destination: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(destination)
+        .current_dir(workspace)
+        .output()
+        .context("failed to remove temporary baseline worktree")?;
+    if !output.status.success() {
+        bail!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if destination.exists() {
+        fs::remove_dir_all(destination).with_context(|| {
+            format!(
+                "failed to remove baseline worktree directory {}",
+                destination.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn git_stdout(workspace: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .with_context(|| format!("failed to execute git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn observe_failure(workspace: &Path, check_name: &str, signature: &str) -> u32 {
@@ -473,5 +653,22 @@ mod tests {
             "",
         );
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn baseline_and_current_identical_diagnostics_have_identical_signature() {
+        let current = failure_signature(
+            "client-web-check",
+            Some(101),
+            "Checking burncloud-client v0.2.0\nerror[E0599]: no method named `location` found for struct `web_sys::Window`\n  --> C:\\Users\\huang\\.cargo\\registry\\dioxus-web-0.7.5\\src\\history.rs:96:36",
+            "",
+        );
+        let baseline = failure_signature(
+            "client-web-check",
+            Some(101),
+            "Checking dioxus-web v0.7.5\nerror[E0599]: no method named `location` found for struct `web_sys::Window`\n  --> C:\\Users\\huang\\.cargo\\registry\\dioxus-web-0.7.5\\src\\history.rs:96:36",
+            "",
+        );
+        assert_eq!(current, baseline);
     }
 }
