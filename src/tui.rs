@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -181,6 +181,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &RunState, live: bool) {
 }
 
 fn draw_task(frame: &mut Frame, area: Rect, state: &RunState) {
+    let now = now_ms();
     let attempt = if state.max_loops == 0 {
         state.attempt.to_string()
     } else {
@@ -191,17 +192,25 @@ fn draw_task(frame: &mut Frame, area: Rect, state: &RunState) {
         .last()
         .map(|event| event_summary_zh(&event.name, &event.detail))
         .unwrap_or_else(|| "等待事件".to_owned());
-    let elapsed = state
-        .total_elapsed_ms(now_ms())
+    let total = state
+        .total_elapsed_ms(now)
         .map(format_duration)
         .unwrap_or_else(|| "--".to_owned());
+    let prepare = preparation_elapsed_ms(state, now)
+        .map(format_duration)
+        .unwrap_or_else(|| "--".to_owned());
+    let routing = state
+        .stage_elapsed_ms("ROUTE", 0, now)
+        .map(format_duration)
+        .unwrap_or_else(|| "--".to_owned());
+    let elapsed = format!("总 {total} · 准备 {prepare} · 路由 {routing}");
     let lines = vec![
         kv("任务", &state.task),
         kv("运行 ID", value_or(&state.run_id, "-")),
         kv("区域", &state.area),
         kv("循环", &attempt),
         kv("阶段", stage_zh(&state.stage)),
-        kv("总耗时", &elapsed),
+        kv("耗时", &elapsed),
         kv("当前", &current),
     ];
     frame.render_widget(
@@ -210,6 +219,17 @@ fn draw_task(frame: &mut Frame, area: Rect, state: &RunState) {
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn preparation_elapsed_ms(state: &RunState, now: u64) -> Option<u64> {
+    let started = state.started_ms?;
+    let route_started = state
+        .timings
+        .iter()
+        .find(|timing| timing.stage == "ROUTE")
+        .map(|timing| timing.started_ms)
+        .unwrap_or(now);
+    Some(route_started.saturating_sub(started))
 }
 
 fn draw_boundaries(frame: &mut Frame, area: Rect, state: &RunState) {
@@ -676,6 +696,7 @@ fn harness_state_dir(workspace: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run_state::StageTiming;
 
     #[test]
     fn compact_collapses_multiline_failure_output() {
@@ -696,5 +717,21 @@ mod tests {
         assert_eq!(format_duration(420), "420ms");
         assert_eq!(format_duration(1_500), "1.5秒");
         assert_eq!(format_duration(125_400), "2分5.4秒");
+    }
+
+    #[test]
+    fn preparation_time_ends_when_routing_starts() {
+        let state = RunState {
+            started_ms: Some(1_000),
+            timings: vec![StageTiming {
+                attempt: 0,
+                stage: "ROUTE".to_owned(),
+                started_ms: 1_350,
+                duration_ms: Some(150),
+            }],
+            ..RunState::default()
+        };
+        assert_eq!(preparation_elapsed_ms(&state, 5_000), Some(350));
+        assert_eq!(state.stage_elapsed_ms("ROUTE", 0, 5_000), Some(150));
     }
 }
