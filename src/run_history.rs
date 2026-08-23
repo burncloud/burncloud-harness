@@ -139,7 +139,11 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
             RunSource::EventStream => value.get("event").unwrap_or(&value),
             RunSource::Trajectory => &value,
         };
-        state.apply(payload);
+        let timestamp_ms = match artifact.source {
+            RunSource::EventStream => value.get("timestamp_ms").and_then(Value::as_u64),
+            RunSource::Trajectory => value.get("ts_ms").and_then(Value::as_u64),
+        };
+        state.apply_at(payload, timestamp_ms);
     }
 
     Ok(RunReplay {
@@ -215,16 +219,17 @@ mod tests {
     }
 
     #[test]
-    fn event_stream_uses_shared_reducer() {
+    fn event_stream_uses_shared_reducer_and_timestamps() {
         let state = temp_state("events");
         let path = state.join("events.jsonl");
         fs::create_dir_all(&state).unwrap();
         fs::write(
             &path,
             concat!(
-                "{\"schema_version\":1,\"sequence\":1,\"timestamp_ms\":1,\"event\":{\"type\":\"task_started\",\"run_id\":\"200\",\"task\":\"buyer-overview\",\"area\":\"ui\"}}\n",
-                "{\"schema_version\":1,\"sequence\":2,\"timestamp_ms\":2,\"event\":{\"type\":\"risk_detected\",\"attempt\":1,\"findings\":[\"review\"]}}\n",
-                "{\"schema_version\":1,\"sequence\":3,\"timestamp_ms\":3,\"event\":{\"type\":\"task_finished\",\"success\":true,\"attempts\":1}}\n"
+                "{\"schema_version\":1,\"sequence\":1,\"timestamp_ms\":1000,\"event\":{\"type\":\"task_started\",\"run_id\":\"200\",\"task\":\"buyer-overview\",\"area\":\"ui\"}}\n",
+                "{\"schema_version\":1,\"sequence\":2,\"timestamp_ms\":2000,\"event\":{\"type\":\"stage_started\",\"attempt\":1,\"stage\":\"RISK\"}}\n",
+                "{\"schema_version\":1,\"sequence\":3,\"timestamp_ms\":2500,\"event\":{\"type\":\"risk_detected\",\"attempt\":1,\"findings\":[\"review\"]}}\n",
+                "{\"schema_version\":1,\"sequence\":4,\"timestamp_ms\":3000,\"event\":{\"type\":\"task_finished\",\"success\":true,\"attempts\":1}}\n"
             ),
         )
         .unwrap();
@@ -238,7 +243,8 @@ mod tests {
         assert_eq!(replay.state.task, "buyer-overview");
         assert_eq!(replay.state.status, "PASSED");
         assert_eq!(replay.state.risk_findings, vec!["review"]);
-        assert_eq!(replay.state.timeline.len(), 3);
+        assert_eq!(replay.state.total_elapsed_ms(9_999), Some(2_000));
+        assert_eq!(replay.state.stage_elapsed_ms("RISK", 1, 9_999), Some(1_000));
         fs::remove_dir_all(state).unwrap();
     }
 
@@ -298,8 +304,8 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "{\"ts_ms\":1,\"type\":\"run_started\",\"run_id\":\"100\",\"task\":\"legacy-task\",\"area\":\"api\"}\n",
-                "{\"ts_ms\":2,\"type\":\"risk_assessed\",\"attempt\":1,\"findings\":[]}\n"
+                "{\"ts_ms\":10,\"type\":\"run_started\",\"run_id\":\"100\",\"task\":\"legacy-task\",\"area\":\"api\"}\n",
+                "{\"ts_ms\":20,\"type\":\"risk_assessed\",\"attempt\":1,\"findings\":[]}\n"
             ),
         )
         .unwrap();
