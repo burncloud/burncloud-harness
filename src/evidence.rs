@@ -20,17 +20,16 @@ pub struct EvidenceBundle {
 impl EvidenceBundle {
     pub fn create(state_dir: &Path, run_id: &str) -> Result<Self> {
         let run_dir = state_dir.join("runs").join(run_id);
-        fs::create_dir_all(&run_dir)
-            .with_context(|| format!("failed to create evidence directory {}", run_dir.display()))?;
+        fs::create_dir_all(&run_dir).with_context(|| {
+            format!("failed to create evidence directory {}", run_dir.display())
+        })?;
         let trajectory_path = run_dir.join("trajectory.jsonl");
-        let trajectory = BufWriter::new(
-            File::create(&trajectory_path).with_context(|| {
-                format!(
-                    "failed to create evidence trajectory {}",
-                    trajectory_path.display()
-                )
-            })?,
-        );
+        let trajectory = BufWriter::new(File::create(&trajectory_path).with_context(|| {
+            format!(
+                "failed to create evidence trajectory {}",
+                trajectory_path.display()
+            )
+        })?);
         let diff_path = run_dir.join("diff.patch");
         fs::write(&diff_path, b"").with_context(|| {
             format!("failed to initialize evidence diff {}", diff_path.display())
@@ -215,7 +214,10 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir()
-            .join(format!("burncloud-evidence-{}-{unique}", std::process::id()))
+            .join(format!(
+                "burncloud-evidence-{}-{unique}",
+                std::process::id()
+            ))
             .join(".git/burncloud-harness")
     }
 
@@ -244,11 +246,14 @@ mod tests {
         bundle
             .write_trajectory_line(b"{\"type\":\"run_started\"}")
             .unwrap();
-        bundle
-            .finish(true, 1, &["src/main.rs".to_owned()])
-            .unwrap();
+        bundle.finish(true, 1, &["src/main.rs".to_owned()]).unwrap();
 
-        for file in ["task.yaml", "trajectory.jsonl", "diff.patch", "summary.json"] {
+        for file in [
+            "task.yaml",
+            "trajectory.jsonl",
+            "diff.patch",
+            "summary.json",
+        ] {
             assert!(bundle.run_dir().join(file).is_file(), "missing {file}");
         }
         let summary = fs::read_to_string(bundle.run_dir().join("summary.json")).unwrap();
@@ -269,7 +274,11 @@ mod tests {
             .unwrap()
             .join("linked-worktree");
         fs::create_dir_all(&worktree).unwrap();
-        fs::write(git_dir.join("gitdir"), worktree.join(".git").display().to_string()).unwrap();
+        fs::write(
+            git_dir.join("gitdir"),
+            worktree.join(".git").display().to_string(),
+        )
+        .unwrap();
 
         assert_eq!(workspace_from_state_dir(&state), worktree);
         fs::remove_dir_all(state.parent().unwrap().parent().unwrap()).unwrap();
