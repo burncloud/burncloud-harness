@@ -380,13 +380,22 @@ fn capture_reference(
         ("reference-desktop.png", DESKTOP_WIDTH, DESKTOP_HEIGHT),
         ("reference-mobile.png", MOBILE_WIDTH, MOBILE_HEIGHT),
     ];
-    if targets
-        .iter()
-        .all(|(name, _, _)| output_dir.join(name).is_file())
+    let cache_key_path = output_dir.join("reference-url.txt");
+    let cache_matches =
+        fs::read_to_string(&cache_key_path).is_ok_and(|cached| cached.trim() == reference_url);
+    if cache_matches
+        && targets
+            .iter()
+            .all(|(name, _, _)| output_dir.join(name).is_file())
     {
         return;
     }
+    for (name, _, _) in targets {
+        let _ = fs::remove_file(output_dir.join(name));
+    }
+    let _ = fs::remove_file(&cache_key_path);
 
+    let mut captured_all = true;
     for (name, width, height) in targets {
         let result = (|| -> Result<()> {
             let tab = browser.new_tab()?;
@@ -394,11 +403,23 @@ fn capture_reference(
             set_viewport(&tab, width, height)?;
             tab.navigate_to(reference_url)?;
             let _ = tab.wait_until_navigated();
+            tab.evaluate(
+                "localStorage.setItem('burncloud_selected_language', 'en')",
+                false,
+            )?;
+            tab.navigate_to(reference_url)?;
+            let _ = tab.wait_until_navigated();
             stabilize_page(&tab)?;
             screenshot(&tab, &output_dir.join(name))
         })();
         if let Err(error) = result {
+            captured_all = false;
             warnings.push(format!("reference capture {name} failed: {error:#}"));
+        }
+    }
+    if captured_all {
+        if let Err(error) = fs::write(&cache_key_path, reference_url) {
+            warnings.push(format!("reference cache key write failed: {error:#}"));
         }
     }
 }
