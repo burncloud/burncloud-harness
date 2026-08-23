@@ -116,7 +116,10 @@ pub fn list_runs(workspace: &Path) -> Result<()> {
     let state_dir = harness_state_dir(workspace)?;
     let runs = run_history::discover(&state_dir)?;
     if runs.is_empty() {
-        println!("目标工作区 {} 中没有 Harness 运行记录。", workspace.display());
+        println!(
+            "目标工作区 {} 中没有 Harness 运行记录。",
+            workspace.display()
+        );
         return Ok(());
     }
     for run in runs {
@@ -497,7 +500,11 @@ fn loop_lines(state: &RunState, compact_failure_detail: bool) -> Vec<Line<'stati
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let limit = if compact_failure_detail { 1 } else { usize::MAX };
+        let limit = if compact_failure_detail {
+            1
+        } else {
+            usize::MAX
+        };
         let start = state.failures.len().saturating_sub(limit);
         for failure in &state.failures[start..] {
             let detail = if compact_failure_detail {
@@ -1062,10 +1069,7 @@ fn compact(value: &str, limit: usize) -> String {
     if normalized.chars().count() <= limit {
         normalized
     } else {
-        format!(
-            "{}…",
-            normalized.chars().take(limit).collect::<String>()
-        )
+        format!("{}…", normalized.chars().take(limit).collect::<String>())
     }
 }
 
