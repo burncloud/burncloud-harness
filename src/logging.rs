@@ -9,8 +9,8 @@ pub fn init() {
         // are emitted by `observer` and remain visible at INFO/WARN.
         "burncloud_harness=info,burncloud_harness::runner=error"
     };
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
