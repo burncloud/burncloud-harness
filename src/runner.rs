@@ -159,6 +159,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         } else {
             AgentResult {
                 success: true,
+                timed_out: false,
                 exit_code: Some(0),
                 stdout: "No agent command executed; verifying provenance-matched existing changes."
                     .to_owned(),
@@ -292,11 +293,8 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                     impact.reasons.join("\n")
                 );
                 if !agent_result.success {
-                    feedback.push_str(&format!(
-                        "\nThe agent command also failed with exit code {:?}:\n{}",
-                        agent_result.exit_code,
-                        compact_failure(&agent_result.stderr, &agent_result.stdout)
-                    ));
+                    feedback.push_str("\n");
+                    feedback.push_str(&agent_failure_feedback(&task, &agent_result));
                 }
                 record_retry(
                     &mut trajectory,
@@ -311,11 +309,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         }
 
         if !agent_result.success {
-            let feedback = format!(
-                "Agent command failed with exit code {:?}.\n{}",
-                agent_result.exit_code,
-                compact_failure(&agent_result.stderr, &agent_result.stdout)
-            );
+            let feedback = agent_failure_feedback(&task, &agent_result);
             record_retry(
                 &mut trajectory,
                 observer,
@@ -608,6 +602,7 @@ fn record_failure<O: RunObserver + ?Sized>(
 
 struct AgentResult {
     success: bool,
+    timed_out: bool,
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
@@ -649,6 +644,16 @@ fn run_agent(
         .context("agent stderr pipe was not available")?;
 
     let events = crate::event_writer::RunEventWriter::open(state_dir, run_id)?;
+    let soft_limit_secs = task.agent.soft_timeout_secs();
+    let hard_limit_secs = task.agent.hard_timeout_secs();
+    let idle_warning_secs = task.agent.idle_timeout_secs();
+    events.append(&crate::events::HarnessEvent::AgentTimeBudgetConfigured {
+        attempt,
+        soft_limit_secs,
+        hard_limit_secs,
+        idle_warning_secs,
+    })?;
+
     let (sender, receiver) = std::sync::mpsc::channel();
     let stdout_sender = sender.clone();
     let stderr_sender = sender.clone();
@@ -694,19 +699,27 @@ fn run_agent(
     });
 
     let started = std::time::Instant::now();
+    let mut last_output = std::time::Instant::now();
     let mut next_heartbeat_secs = 5_u64;
+    let mut soft_limit_emitted = false;
+    let mut idle_warning_emitted = false;
+    let mut hard_timed_out = false;
     let mut stdout_buffer = String::new();
     let mut stderr_buffer = String::new();
 
     let status = loop {
         match receiver.recv_timeout(std::time::Duration::from_millis(200)) {
-            Ok(line) => record_agent_line(
-                &events,
-                attempt,
-                line,
-                &mut stdout_buffer,
-                &mut stderr_buffer,
-            )?,
+            Ok(line) => {
+                last_output = std::time::Instant::now();
+                idle_warning_emitted = false;
+                record_agent_line(
+                    &events,
+                    attempt,
+                    line,
+                    &mut stdout_buffer,
+                    &mut stderr_buffer,
+                )?;
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -722,8 +735,69 @@ fn run_agent(
             next_heartbeat_secs += 5;
         }
 
+        if let Some(soft_limit_secs) = soft_limit_secs {
+            if !soft_limit_emitted && elapsed_secs >= soft_limit_secs {
+                events.append(&crate::events::HarnessEvent::AgentSoftLimitReached {
+                    attempt,
+                    elapsed_secs,
+                    soft_limit_secs,
+                })?;
+                tracing::warn!(
+                    attempt,
+                    phase = "AGENT",
+                    elapsed_secs,
+                    soft_limit_secs,
+                    "agent reached soft convergence target; finish the smallest coherent checkpoint"
+                );
+                soft_limit_emitted = true;
+            }
+        }
+
+        if let Some(idle_warning_secs) = idle_warning_secs {
+            let idle_secs = last_output.elapsed().as_secs();
+            if !idle_warning_emitted && idle_secs >= idle_warning_secs {
+                events.append(&crate::events::HarnessEvent::AgentIdleWarning {
+                    attempt,
+                    elapsed_secs,
+                    idle_secs,
+                    idle_warning_secs,
+                })?;
+                tracing::warn!(
+                    attempt,
+                    phase = "AGENT",
+                    elapsed_secs,
+                    idle_secs,
+                    idle_warning_secs,
+                    "agent has produced no output beyond the idle warning threshold"
+                );
+                idle_warning_emitted = true;
+            }
+        }
+
         if let Some(status) = child.try_wait()? {
             break status;
+        }
+
+        if let Some(hard_limit_secs) = hard_limit_secs {
+            if elapsed_secs >= hard_limit_secs {
+                events.append(&crate::events::HarnessEvent::AgentHardTimeout {
+                    attempt,
+                    elapsed_secs,
+                    hard_limit_secs,
+                })?;
+                tracing::warn!(
+                    attempt,
+                    phase = "AGENT",
+                    elapsed_secs,
+                    hard_limit_secs,
+                    "agent reached hard time budget; preserving worktree and ending this attempt"
+                );
+                child
+                    .kill()
+                    .context("failed to terminate agent after hard time budget")?;
+                hard_timed_out = true;
+                break child.wait()?;
+            }
         }
     };
 
@@ -740,11 +814,31 @@ fn run_agent(
     }
 
     Ok(AgentResult {
-        success: status.success(),
+        success: status.success() && !hard_timed_out,
+        timed_out: hard_timed_out,
         exit_code: status.code(),
         stdout: stdout_buffer,
         stderr: stderr_buffer,
     })
+}
+
+fn agent_failure_feedback(task: &TaskSpec, result: &AgentResult) -> String {
+    let evidence = compact_failure(&result.stderr, &result.stdout);
+    if result.timed_out {
+        let hard = task
+            .agent
+            .hard_timeout_minutes
+            .map(|minutes| format!("{minutes} minutes"))
+            .unwrap_or_else(|| "the configured hard limit".to_owned());
+        format!(
+            "Agent reached the hard time budget ({hard}). The current worktree is preserved. Continue from the existing in-scope diff on the next attempt; do not restart discovery or discard correct work. Prioritize closing the smallest remaining gap and verification.\nLast agent evidence:\n{evidence}"
+        )
+    } else {
+        format!(
+            "Agent command failed with exit code {:?}.\n{}",
+            result.exit_code, evidence
+        )
+    }
 }
 
 fn record_agent_line(
