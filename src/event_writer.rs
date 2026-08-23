@@ -51,13 +51,17 @@ impl RunEventWriter {
     pub fn create(state_dir: &Path, run_id: &str) -> Result<Self> {
         let runs_dir = state_dir.join("runs");
         let run_dir = runs_dir.join(run_id);
-        fs::create_dir_all(&run_dir)
-            .with_context(|| format!("failed to create event run directory {}", run_dir.display()))?;
+        fs::create_dir_all(&run_dir).with_context(|| {
+            format!("failed to create event run directory {}", run_dir.display())
+        })?;
 
         let latest_dir = runs_dir.join("latest");
         if latest_dir.is_dir() {
             fs::remove_dir_all(&latest_dir).with_context(|| {
-                format!("failed to reset latest event directory {}", latest_dir.display())
+                format!(
+                    "failed to reset latest event directory {}",
+                    latest_dir.display()
+                )
             })?;
         } else if latest_dir.exists() {
             fs::remove_file(&latest_dir).with_context(|| {
@@ -65,7 +69,10 @@ impl RunEventWriter {
             })?;
         }
         fs::create_dir_all(&latest_dir).with_context(|| {
-            format!("failed to create latest event directory {}", latest_dir.display())
+            format!(
+                "failed to create latest event directory {}",
+                latest_dir.display()
+            )
         })?;
         fs::write(latest_dir.join("run_id"), format!("{run_id}\n"))?;
 
