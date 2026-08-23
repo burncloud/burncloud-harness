@@ -3,13 +3,13 @@ doc_id: ui.review-checklist
 doc_type: verification-standard
 truth: target
 status: approved
-version: 1.0
+version: 1.1
 parent:
   - docs/ui/product-standard.md
   - docs/ui/information-architecture.md
 ---
 
-# BurnCloud UI Review Checklist v1.0
+# BurnCloud UI Review Checklist v1.1
 
 本清单用于设计评审、Agent 自检、PR Review 和 Golden Page 验收。不是所有项都必须手工检查；可执行的规则应逐步转成 automated gate。
 
@@ -42,6 +42,7 @@ parent:
 - [ ] Error 说明影响与下一步
 - [ ] Recovered/Success 说明真实结果
 - [ ] Unknown 不伪装成 0 / Healthy / Paid / Ready
+- [ ] Source-port 页面在 Unknown/Unavailable 时仍保持源页面主要组件与几何结构
 
 ## D. Autopilot
 
@@ -70,6 +71,9 @@ parent:
 - [ ] 图表每张回答明确问题
 - [ ] 没有装饰性 Pie/Donut/Radar/Gauge/3D
 - [ ] 优先复用现有共享组件
+- [ ] Source-port 页面与 pinned source 在 application shell、role navigation、page header、major section order 上可立即识别为同一产品页面
+- [ ] 没有因为现有 Rust legacy Console 已存在就保留与 source 不一致的旧壳
+- [ ] 缺失真实数据只替换 value/state，不擅自替换 source 的 metric/table/card/list 结构
 
 ## G. Table / Data
 
@@ -110,10 +114,12 @@ parent:
 - [ ] 功能路径真实可执行
 - [ ] 适用 UI/Product gate 通过
 - [ ] Visual QA 已检查主要 viewport
+- [ ] Source-port 任务已按 `source-migration-fidelity.md` 逐项比较主要视觉 landmark
 - [ ] Error/Empty/Loading 已实际验证
 - [ ] 最终 Diff 没有无关 UI 漂移
+- [ ] 最终 Diff 未超过任务声明的 `scope.max_changed_files`
 - [ ] 改变的产品真相已同步对应文档
 
 ## Definition of Done
 
-页面不是因为“代码写完、编译通过、截图好看”而完成。只有当对应 Page Contract 的 Success Condition 可以由真实行为证明、适用 Review Checklist 通过、且没有越过 Product Gate 时，才可声明 UI Done。
+页面不是因为“代码写完、编译通过、截图好看”而完成。只有当对应 Page Contract 的 Success Condition、适用 Source Migration Fidelity 规则、Review Checklist、change budget 和 executable gates 都通过，且没有越过 Product Gate，才可声明 UI Done。
