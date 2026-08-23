@@ -1,8 +1,15 @@
-use std::{collections::BTreeSet, path::Path, process::Command};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::Path,
+    process::Command,
+    sync::{Mutex, OnceLock},
+};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::config::CheckSpec;
+
+const REPEATED_FAILURE_LIMIT: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct PlannedCheck {
@@ -22,6 +29,14 @@ pub struct CheckResult {
     pub stdout: String,
     pub stderr: String,
 }
+
+#[derive(Debug, Clone)]
+struct FailureObservation {
+    signature: String,
+    consecutive: u32,
+}
+
+static FAILURE_OBSERVATIONS: OnceLock<Mutex<HashMap<String, FailureObservation>>> = OnceLock::new();
 
 pub fn plan_checks(
     changed_paths: &[String],
@@ -205,15 +220,125 @@ pub fn run_check(workspace: &Path, check: &PlannedCheck) -> Result<CheckResult> 
         .output()
         .with_context(|| format!("failed to execute check '{}'", check.name))?;
 
+    let success = output.status.success();
+    let exit_code = output.status.code();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if success {
+        clear_failure_observation(workspace, &check.name);
+    } else {
+        let signature = failure_signature(&check.name, exit_code, &stderr, &stdout);
+        let consecutive = observe_failure(workspace, &check.name, &signature);
+        if consecutive >= REPEATED_FAILURE_LIMIT {
+            let evidence = compact_diagnostic(&stderr, &stdout);
+            bail!(
+                "REPEATED_UNCHANGED_FAILURE: mandatory check '{}' produced the same failure signature {} for {} consecutive verification passes. BurnCloud Harness stopped before spending another Agent loop. The current worktree is preserved. Treat this as a likely baseline/dependency/environment blocker or an unchanged root cause; diagnose the blocker, then continue with --resume.\n{}",
+                check.name,
+                signature,
+                consecutive,
+                evidence
+            );
+        }
+    }
+
     Ok(CheckResult {
         name: check.name.clone(),
         command: check.command.clone(),
         reason: check.reason.clone(),
-        success: output.status.success(),
-        exit_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        success,
+        exit_code,
+        stdout,
+        stderr,
     })
+}
+
+fn observe_failure(workspace: &Path, check_name: &str, signature: &str) -> u32 {
+    let key = observation_key(workspace, check_name);
+    let observations = FAILURE_OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut observations = observations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = observations.entry(key).or_insert(FailureObservation {
+        signature: signature.to_owned(),
+        consecutive: 0,
+    });
+
+    if entry.signature == signature {
+        entry.consecutive += 1;
+    } else {
+        entry.signature = signature.to_owned();
+        entry.consecutive = 1;
+    }
+    entry.consecutive
+}
+
+fn clear_failure_observation(workspace: &Path, check_name: &str) {
+    let Some(observations) = FAILURE_OBSERVATIONS.get() else {
+        return;
+    };
+    let mut observations = observations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    observations.remove(&observation_key(workspace, check_name));
+}
+
+fn observation_key(workspace: &Path, check_name: &str) -> String {
+    format!("{}::{check_name}", workspace.display())
+}
+
+fn failure_signature(
+    check_name: &str,
+    exit_code: Option<i32>,
+    stderr: &str,
+    stdout: &str,
+) -> String {
+    let diagnostic = normalized_diagnostic(stderr, stdout);
+    let value = format!("{check_name}|{exit_code:?}|{diagnostic}");
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn normalized_diagnostic(stderr: &str, stdout: &str) -> String {
+    let value = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            !line.starts_with("Checking ")
+                && !line.starts_with("Compiling ")
+                && !line.starts_with("Downloaded ")
+                && !line.starts_with("Downloading ")
+                && !line.starts_with("Finished ")
+        })
+        .take(80)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace('\\', "/")
+}
+
+fn compact_diagnostic(stderr: &str, stdout: &str) -> String {
+    let value = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    const LIMIT: usize = 2_000;
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= LIMIT {
+        trimmed.to_owned()
+    } else {
+        format!("{}…", trimmed.chars().take(LIMIT).collect::<String>())
+    }
 }
 
 fn has_invariant_family(invariant_ids: &[String], prefix: &str) -> bool {
@@ -331,5 +456,22 @@ mod tests {
     fn docs_only_change_without_invariant_impact_does_not_invent_build_checks() {
         let checks = plan_checks(&["docs/agent/README.md".into()], &[], &[]);
         assert!(checks.is_empty());
+    }
+
+    #[test]
+    fn failure_signature_ignores_cargo_progress_noise() {
+        let first = failure_signature(
+            "client-web-check",
+            Some(101),
+            "Checking dioxus-web v0.7.5\nerror[E0599]: no method named `location`\n  --> C:\\src\\history.rs:96:36",
+            "",
+        );
+        let second = failure_signature(
+            "client-web-check",
+            Some(101),
+            "Checking burncloud-client v0.1.0\nerror[E0599]: no method named `location`\n  --> C:\\src\\history.rs:96:36",
+            "",
+        );
+        assert_eq!(first, second);
     }
 }

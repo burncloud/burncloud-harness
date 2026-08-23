@@ -183,7 +183,7 @@ fn load_resume_provenance(path: &Path) -> Result<Option<ResumeProvenance>> {
 
     let mut started: Option<ResumeProvenance> = None;
     let mut last_checkpoint: Option<(Vec<String>, String)> = None;
-    let mut finished = false;
+    let mut finished_success: Option<bool> = None;
 
     for line in reader.lines() {
         let line = line.with_context(|| format!("failed to read trajectory {}", path.display()))?;
@@ -268,13 +268,13 @@ fn load_resume_provenance(path: &Path) -> Result<Option<ResumeProvenance>> {
                 last_checkpoint = Some((changed_paths, diff_fingerprint));
             }
             "run_finished" => {
-                finished = true;
+                finished_success = value.get("success").and_then(Value::as_bool);
             }
             _ => {}
         }
     }
 
-    if finished {
+    if finished_success == Some(true) {
         return Ok(None);
     }
 
@@ -623,6 +623,43 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].run_id, "new");
         assert_eq!(candidates[0].diff_fingerprint, "fnv1a64:1234");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_finished_checkpoint_is_resumable_but_success_is_not() {
+        let unique = unix_ms();
+        let root = std::env::temp_dir().join(format!(
+            "burncloud-harness-trajectory-finished-{}-{unique}",
+            std::process::id()
+        ));
+        let runs = root.join("runs");
+        fs::create_dir_all(&runs).unwrap();
+        let contract = r#"{"type":"run_started","run_id":"RUN","task":"x","goal":"y","area":"ui","max_loops":3,"baseline_head":"abc","allowed":["crates/client/**"],"avoid":[],"context_files":["../../target.md"],"agent_program":"codex","agent_args":["exec"],"agent_append_prompt":true,"resumed_from":null}"#;
+        let checkpoint = r#"{"type":"scope_evaluated","attempt":3,"changed_paths":["crates/client/x.rs"],"violations":[],"diff_fingerprint":"fnv1a64:1234"}"#;
+
+        fs::write(
+            runs.join("failed.jsonl"),
+            format!(
+                "{}\n{}\n{{\"type\":\"run_finished\",\"success\":false,\"attempts\":3,\"changed_paths\":[\"crates/client/x.rs\"]}}\n",
+                contract.replace("RUN", "failed"),
+                checkpoint
+            ),
+        )
+        .unwrap();
+        fs::write(
+            runs.join("passed.jsonl"),
+            format!(
+                "{}\n{}\n{{\"type\":\"run_finished\",\"success\":true,\"attempts\":3,\"changed_paths\":[\"crates/client/x.rs\"]}}\n",
+                contract.replace("RUN", "passed"),
+                checkpoint
+            ),
+        )
+        .unwrap();
+
+        let candidates = load_resume_provenances(&root).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].run_id, "failed");
         fs::remove_dir_all(root).unwrap();
     }
 
