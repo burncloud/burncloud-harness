@@ -24,6 +24,17 @@ const DESKTOP_HEIGHT: u32 = 1000;
 const MOBILE_WIDTH: u32 = 390;
 const MOBILE_HEIGHT: u32 = 844;
 
+pub fn run_migration(
+    workspace: &Path,
+    spec: &UiVisualSpec,
+    shared_target_dir: Option<&Path>,
+) -> Result<String> {
+    let mut source_fidelity_spec = spec.clone();
+    source_fidelity_spec.clipping_selectors.clear();
+    source_fidelity_spec.mobile_menu = None;
+    run(workspace, &source_fidelity_spec, shared_target_dir)
+}
+
 pub fn run(
     workspace: &Path,
     spec: &UiVisualSpec,
