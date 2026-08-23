@@ -104,10 +104,22 @@ Start with Buyer Overview:
 cargo run -- run --task tasks/ui/buyer-overview.yaml
 ```
 
-In a second terminal, observe the run:
+Harness run state is stored in the target BurnCloud repository, not in the harness repository:
+
+```text
+../burncloud/.git/burncloud-harness/runs/<run_id>/
+```
+
+In a second terminal, observe the target workspace. `../burncloud` is the default, so the short command works from the sibling layout above:
 
 ```bash
 cargo run -- tui
+```
+
+The explicit equivalent is:
+
+```bash
+cargo run -- tui --workspace ../burncloud
 ```
 
 After the run:
@@ -117,10 +129,12 @@ cargo run -- tui --list
 cargo run -- explain-run --run <run_id>
 ```
 
+Both observer commands default to `../burncloud`. Use `--workspace <path>` if the BurnCloud checkout is elsewhere.
+
 Review the evidence bundle under:
 
 ```text
-.git/burncloud-harness/runs/<run_id>/
+../burncloud/.git/burncloud-harness/runs/<run_id>/
 ├── task.yaml
 ├── events.jsonl
 ├── trajectory.jsonl
