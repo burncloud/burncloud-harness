@@ -45,10 +45,14 @@ pub fn curate(stream: &str, line: &str) -> Option<CuratedAgentLine> {
 
 fn curate_change_protocol(line: &str) -> Option<CuratedAgentLine> {
     if let Some(payload) = line.strip_prefix(CHANGE_INTENT_PREFIX) {
-        return Some(parse_change_intent(payload).unwrap_or_else(|| malformed_change_protocol(line)));
+        return Some(
+            parse_change_intent(payload).unwrap_or_else(|| malformed_change_protocol(line)),
+        );
     }
     if let Some(payload) = line.strip_prefix(CHANGE_RESULT_PREFIX) {
-        return Some(parse_change_result(payload).unwrap_or_else(|| malformed_change_protocol(line)));
+        return Some(
+            parse_change_result(payload).unwrap_or_else(|| malformed_change_protocol(line)),
+        );
     }
     None
 }
