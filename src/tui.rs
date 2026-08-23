@@ -21,6 +21,8 @@ use crate::{
     run_history::{self, RunArtifact, RunReplay},
 };
 
+const REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+
 pub fn list_runs() -> Result<()> {
     let state_dir = harness_state_dir()?;
     let runs = run_history::discover(&state_dir)?;
@@ -69,9 +71,10 @@ fn run_loop(
     replay: &mut RunReplay,
 ) -> Result<()> {
     loop {
+        refresh_replay(state_dir, requested_run, artifact, replay)?;
         terminal.draw(|frame| {
             let area = frame.area();
-            let widget = Paragraph::new(render_replay(replay)).block(
+            let widget = Paragraph::new(render_replay(replay, requested_run.is_none())).block(
                 Block::default()
                     .title("BurnCloud Harness Monitor")
                     .borders(Borders::ALL),
@@ -79,18 +82,15 @@ fn run_loop(
             frame.render_widget(widget, area);
         })?;
 
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
-
-        if let TerminalEvent::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('r') => {
-                    *artifact = run_history::resolve(state_dir, requested_run)?;
-                    *replay = run_history::load(artifact)?;
+        if event::poll(REFRESH_INTERVAL)? {
+            if let TerminalEvent::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('r') => {
+                        refresh_replay(state_dir, requested_run, artifact, replay)?;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -98,8 +98,22 @@ fn run_loop(
     Ok(())
 }
 
-fn render_replay(replay: &RunReplay) -> String {
+fn refresh_replay(
+    state_dir: &std::path::Path,
+    requested_run: Option<&str>,
+    artifact: &mut RunArtifact,
+    replay: &mut RunReplay,
+) -> Result<()> {
+    let next_artifact = run_history::resolve(state_dir, requested_run)?;
+    let next_replay = run_history::load(&next_artifact)?;
+    *artifact = next_artifact;
+    *replay = next_replay;
+    Ok(())
+}
+
+fn render_replay(replay: &RunReplay, live: bool) -> String {
     let mut output = String::new();
+    output.push_str(&format!("Mode: {}\n", if live { "LIVE" } else { "REPLAY" }));
     output.push_str(&format!("Run ID: {}\n", replay.run_id));
     output.push_str(&format!("Task: {}\n", replay.task));
     output.push_str(&format!("Status: {}\n", replay.status));
@@ -114,7 +128,7 @@ fn render_replay(replay: &RunReplay) -> String {
         ));
     }
 
-    output.push_str("\nControls: q/esc quit · r refresh\n");
+    output.push_str("\nAuto-refresh: 250ms · Controls: q/esc quit · r refresh now\n");
     output
 }
 
