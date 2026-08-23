@@ -117,31 +117,37 @@ fn draw_dashboard(frame: &mut Frame, replay: &RunReplay, live: bool) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(9),
-            Constraint::Length(12),
-            Constraint::Min(12),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Min(18),
             Constraint::Length(3),
         ])
         .split(area);
 
     draw_header(frame, rows[0], &replay.state, live);
 
-    let top = split_horizontal(rows[1], 56, 44);
-    draw_task(frame, top[0], &replay.state);
+    let top = split_horizontal(rows[1], 57);
+    draw_task_summary(frame, top[0], &replay.state);
     draw_boundaries(frame, top[1], &replay.state);
 
-    let middle = split_horizontal(rows[2], 62, 38);
+    let middle = split_horizontal(rows[2], 62);
     draw_loop(frame, middle[0], &replay.state);
-    draw_invariants(frame, middle[1], &replay.state);
+    draw_context(frame, middle[1], &replay.state);
 
-    let bottom = split_horizontal(rows[3], 50, 50);
-    draw_activity_changes_and_risk(frame, bottom[0], &replay.state);
-    draw_checks(frame, bottom[1], &replay.state);
+    let bottom = split_horizontal(rows[3], 50);
+    let bottom_left = split_vertical(bottom[0], 54);
+    draw_agent_activity(frame, bottom_left[0], &replay.state);
+    draw_changes_and_risk(frame, bottom_left[1], &replay.state);
+
+    let bottom_right = split_vertical(bottom[1], 54);
+    draw_checks(frame, bottom_right[0], &replay.state);
+    draw_recent_events(frame, bottom_right[1], &replay.state);
 
     draw_footer(frame, rows[4], replay, live);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, state: &RunState, live: bool) {
+    let now = now_ms();
     let status = match state.status.as_str() {
         "PASSED" => Span::styled(
             " 通过 ",
@@ -161,6 +167,11 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &RunState, live: bool) {
         ),
     };
     let mode = if live { "实时" } else { "回放" };
+    let attempt = attempt_label(state);
+    let stage_elapsed = current_stage_elapsed_ms(state, now)
+        .map(format_duration)
+        .unwrap_or_else(|| "--".to_owned());
+
     let line = Line::from(vec![
         Span::styled(
             " BurnCloud Harness 监控台 ",
@@ -170,128 +181,106 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &RunState, live: bool) {
         ),
         status,
         Span::raw("   "),
-        Span::styled(format!("模式 {mode}"), Style::default().fg(Color::White)),
-        Span::raw("   "),
         Span::styled(
-            "事件 → 状态归约 → 观察器",
-            Style::default().fg(Color::Magenta),
+            format!("{} {stage_elapsed}", stage_zh(&state.stage)),
+            Style::default().fg(Color::White),
         ),
+        Span::raw("   "),
+        Span::styled(format!("第 {attempt} 轮"), Style::default().fg(Color::Cyan)),
+        Span::raw("   "),
+        Span::styled(format!("模式 {mode}"), Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(line).block(panel("控制平面")), area);
 }
 
-fn draw_task(frame: &mut Frame, area: Rect, state: &RunState) {
+fn draw_task_summary(frame: &mut Frame, area: Rect, state: &RunState) {
     let now = now_ms();
-    let attempt = if state.max_loops == 0 {
-        state.attempt.to_string()
-    } else {
-        format!("{}/{}", state.attempt, state.max_loops)
-    };
-    let current = if state.stage == "AGENT" {
-        state
-            .agent_activity
-            .last()
-            .map(|activity| {
-                format!(
-                    "智能体{} · {}",
-                    if activity.stream == "stderr" {
-                        "错误"
-                    } else {
-                        "输出"
-                    },
-                    compact(&activity.line, 72)
-                )
-            })
-            .unwrap_or_else(|| "智能体已启动，等待首条输出".to_owned())
-    } else {
-        state
-            .timeline
-            .last()
-            .map(|event| event_summary_zh(&event.name, &event.detail))
-            .unwrap_or_else(|| "等待事件".to_owned())
-    };
     let total = state
         .total_elapsed_ms(now)
         .map(format_duration)
         .unwrap_or_else(|| "--".to_owned());
-    let prepare = preparation_elapsed_ms(state, now)
+    let stage_elapsed = current_stage_elapsed_ms(state, now)
         .map(format_duration)
         .unwrap_or_else(|| "--".to_owned());
-    let routing = state
-        .stage_elapsed_ms("ROUTE", 0, now)
-        .map(format_duration)
-        .unwrap_or_else(|| "--".to_owned());
-    let elapsed = format!("总 {total} · 准备 {prepare} · 路由 {routing}");
+    let activity = agent_activity_summary(state, now);
+    let (passed, failed, running) = check_counts(state);
+
     let lines = vec![
         kv("任务", &state.task),
-        kv("运行 ID", value_or(&state.run_id, "-")),
-        kv("区域", &state.area),
-        kv("循环", &attempt),
-        kv("阶段", stage_zh(&state.stage)),
-        kv("耗时", &elapsed),
-        kv("当前", &current),
+        kv("运行", value_or(&state.run_id, "-")),
+        kv("进度", &format!("第 {} 轮 · {}", attempt_label(state), stage_zh(&state.stage))),
+        kv("阶段耗时", &stage_elapsed),
+        kv("总耗时", &total),
+        kv("活动", &activity),
+        kv(
+            "验证",
+            &format!("通过 {passed} · 失败 {failed} · 运行 {running}"),
+        ),
+        kv(
+            "状态",
+            &format!(
+                "变更 {} · 越界 {} · 风险 {}",
+                state.changed_files.len(),
+                state.violations.len(),
+                state.risk_findings.len()
+            ),
+        ),
     ];
+
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("任务契约"))
+            .block(panel("运行摘要"))
             .wrap(Wrap { trim: true }),
         area,
     );
 }
 
-fn preparation_elapsed_ms(state: &RunState, now: u64) -> Option<u64> {
-    let started = state.started_ms?;
-    let route_started = state
-        .timings
-        .iter()
-        .find(|timing| timing.stage == "ROUTE")
-        .map(|timing| timing.started_ms)
-        .unwrap_or(now);
-    Some(route_started.saturating_sub(started))
-}
-
 fn draw_boundaries(frame: &mut Frame, area: Rect, state: &RunState) {
     let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("允许 {} 条  ", state.allowed.len()),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("禁止 {} 条", state.avoid.len()),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
     if state.allowed.is_empty() {
         lines.push(Line::from(Span::styled(
-            "允许  等待任务范围",
+            "等待任务范围",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for path in state.allowed.iter().take(2) {
+        for path in state.allowed.iter().take(3) {
             lines.push(Line::from(vec![
-                Span::styled(
-                    "允许  ",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(compact(path, 70)),
+                Span::styled("+  ", Style::default().fg(Color::Green)),
+                Span::raw(compact(path, 68)),
             ]));
         }
     }
+
     for path in state.avoid.iter().take(2) {
         lines.push(Line::from(vec![
-            Span::styled(
-                "禁止  ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(compact(path, 70)),
+            Span::styled("-  ", Style::default().fg(Color::Red)),
+            Span::raw(compact(path, 68)),
         ]));
     }
-    if state.violations.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "边界  当前无越界修改",
-            Style::default().fg(Color::DarkGray),
-        )));
+
+    let boundary = if state.violations.is_empty() {
+        Span::styled("边界状态  当前无越界修改", Style::default().fg(Color::DarkGray))
     } else {
-        for path in state.violations.iter().take(2) {
-            lines.push(Line::from(Span::styled(
-                format!("越界  {}", compact(path, 66)),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )));
-        }
-    }
+        Span::styled(
+            format!("边界状态  发现 {} 项越界", state.violations.len()),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
+    };
+    lines.push(Line::from(boundary));
+
     frame.render_widget(
         Paragraph::new(lines)
             .block(panel("硬边界"))
@@ -318,42 +307,49 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &RunState) {
         spans.push(Span::styled(format!(" {} ", stage_zh(phase)), style));
     }
 
+    let current_elapsed = current_stage_elapsed_ms(state, now)
+        .map(format_duration)
+        .unwrap_or_else(|| "--".to_owned());
     let mut lines = vec![Line::from(spans)];
+    lines.push(Line::from(vec![
+        Span::styled(
+            "当前阶段  ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} · {current_elapsed}", stage_zh(&state.stage)),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
     lines.push(Line::from(Span::styled(
-        "本轮阶段耗时",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        "本轮各阶段",
+        Style::default().fg(Color::DarkGray),
     )));
     lines.push(timing_line(state, &PHASES[..3], now));
     lines.push(timing_line(state, &PHASES[3..], now));
 
     if state.failures.is_empty() {
         lines.push(Line::from(Span::styled(
-            "尚未重试；只有证据产生反馈时才进入下一轮。",
+            "决策  尚未产生重试或停止原因",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        lines.push(Line::from(Span::styled(
-            "为什么重试",
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for failure in state.failures.iter().rev().take(4).rev() {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(
-                        "#{} {}  ",
-                        failure.attempt,
-                        failure_class_zh(&failure.class)
-                    ),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(compact(&failure.detail, 96)),
-            ]));
-        }
+        let failure = state.failures.last().expect("failure list is not empty");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("决策  #{} {}  ", failure.attempt, failure_class_zh(&failure.class)),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(compact(&failure.detail, 88)),
+        ]));
     }
+
     frame.render_widget(
         Paragraph::new(lines)
             .block(panel("证据驱动循环"))
@@ -366,7 +362,7 @@ fn timing_line(state: &RunState, phases: &[&str], now: u64) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, phase) in phases.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::raw("   "));
+            spans.push(Span::raw("    "));
         }
         let elapsed = state
             .stage_elapsed_ms(phase, state.attempt, now)
@@ -374,7 +370,7 @@ fn timing_line(state: &RunState, phases: &[&str], now: u64) -> Line<'static> {
             .unwrap_or_else(|| "--".to_owned());
         let running = if state.stage == *phase { " ↻" } else { "" };
         spans.push(Span::styled(
-            format!("{} {}{}", stage_zh(phase), elapsed, running),
+            format!("{} {elapsed}{running}", stage_zh(phase)),
             if state.stage == *phase {
                 Style::default()
                     .fg(Color::Yellow)
@@ -387,133 +383,158 @@ fn timing_line(state: &RunState, phases: &[&str], now: u64) -> Line<'static> {
     Line::from(spans)
 }
 
-fn draw_invariants(frame: &mut Frame, area: Rect, state: &RunState) {
+fn draw_context(frame: &mut Frame, area: Rect, state: &RunState) {
     let mut lines = Vec::new();
-    for invariant in state.invariants.iter().take(5) {
-        let is_new = state.newly_required.iter().any(|item| item == invariant);
-        let marker = if is_new { "+新增 " } else { "保持  " };
-        let color = if is_new { Color::Yellow } else { Color::Cyan };
-        lines.push(Line::from(vec![
-            Span::styled(
-                marker,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(compact(invariant, 70)),
-        ]));
-    }
-    if lines.is_empty() {
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("不变量 {}  ", state.invariants.len()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("新增 {}", state.newly_required.len()),
+            Style::default().fg(Color::Yellow),
+        ),
+    ]));
+
+    if state.invariants.is_empty() {
         lines.push(Line::from(Span::styled(
             "尚未加载不变量",
             Style::default().fg(Color::DarkGray),
         )));
-    }
-    if !state.routes.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "路由依据：",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for route in state.routes.iter().take(2) {
-            lines.push(Line::from(compact(route, 72)));
+    } else {
+        for invariant in state.invariants.iter().take(3) {
+            let is_new = state.newly_required.iter().any(|item| item == invariant);
+            let marker = if is_new { "+  " } else { "•  " };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    marker,
+                    Style::default().fg(if is_new { Color::Yellow } else { Color::Cyan }),
+                ),
+                Span::raw(compact(invariant, 68)),
+            ]));
         }
     }
+
+    lines.push(Line::from(Span::styled(
+        format!("路由 {}", state.routes.len()),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for route in state.routes.iter().take(2) {
+        lines.push(Line::from(format!("• {}", compact(route, 70))));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("关键事件 {}", state.timeline.len()),
+        Style::default().fg(Color::DarkGray),
+    )));
+
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("不变量 + 路由"))
+            .block(panel("运行上下文"))
             .wrap(Wrap { trim: true }),
         area,
     );
 }
 
-fn draw_activity_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunState) {
+fn draw_agent_activity(frame: &mut Frame, area: Rect, state: &RunState) {
     let now = now_ms();
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
-        "智能体实时活动",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        agent_activity_summary(state, now),
+        Style::default().fg(Color::DarkGray),
     )));
 
     if state.agent_activity.is_empty() {
-        let heartbeat = state
-            .agent_heartbeat_elapsed_secs
-            .map(|seconds| format!(" · 心跳 {seconds}秒"))
-            .unwrap_or_default();
         lines.push(Line::from(Span::styled(
-            format!("等待智能体输出{heartbeat}"),
+            "等待有意义的智能体活动",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let age = state
-            .agent_last_output_ms
-            .map(|timestamp| format_duration(now.saturating_sub(timestamp)))
-            .unwrap_or_else(|| "--".to_owned());
-        let heartbeat = state
-            .agent_heartbeat_elapsed_secs
-            .map(|seconds| format!(" · 进程心跳 {seconds}秒"))
-            .unwrap_or_default();
-        lines.push(Line::from(Span::styled(
-            format!("最后输出 {age} 前{heartbeat}"),
-            Style::default().fg(Color::DarkGray),
-        )));
-        for activity in state.agent_activity.iter().rev().take(4).rev() {
+        for activity in state.agent_activity.iter().rev().take(5).rev() {
             let (marker, color) = if activity.stream == "stderr" {
                 ("错误", Color::Red)
             } else {
-                ("输出", Color::Cyan)
+                ("活动", Color::Cyan)
             };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{marker}  "),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(compact(&activity.line, 82)),
+                Span::raw(compact(&activity.line, 84)),
             ]));
-        }
-    }
-
-    if state.changed_files.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "变更  尚未进入 Git 差异检查",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "变更文件",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for path in state.changed_files.iter().take(3) {
-            lines.push(Line::from(format!("• {}", compact(path, 82))));
-        }
-    }
-
-    lines.push(Line::from(Span::styled(
-        "风险",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )));
-    if state.risk_findings.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "当前未发现确定性风险",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else {
-        for finding in state.risk_findings.iter().take(2) {
-            lines.push(Line::from(Span::styled(
-                compact(finding, 88),
-                Style::default().fg(Color::Yellow),
-            )));
         }
     }
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("智能体活动 + 变更 + 风险"))
+            .block(panel("智能体活动"))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn draw_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunState) {
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("变更 {}  ", state.changed_files.len()),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("风险 {}  ", state.risk_findings.len()),
+            Style::default()
+                .fg(if state.risk_findings.is_empty() {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("越界 {}", state.violations.len()),
+            Style::default()
+                .fg(if state.violations.is_empty() {
+                    Color::Green
+                } else {
+                    Color::Red
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    if state.changed_files.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "尚未进入 Git 差异检查",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for path in state.changed_files.iter().take(3) {
+            lines.push(Line::from(format!("• {}", compact(path, 84))));
+        }
+    }
+
+    if let Some(finding) = state.risk_findings.first() {
+        lines.push(Line::from(Span::styled(
+            format!("风险  {}", compact(finding, 78)),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    if let Some(violation) = state.violations.first() {
+        lines.push(Line::from(Span::styled(
+            format!("越界  {}", compact(violation, 78)),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel("变更与风险"))
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -521,14 +542,39 @@ fn draw_activity_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunStat
 
 fn draw_checks(frame: &mut Frame, area: Rect, state: &RunState) {
     let now = now_ms();
-    let mut lines = Vec::new();
+    let (passed, failed, running) = check_counts(state);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("通过 {passed}  "),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("失败 {failed}  "),
+            Style::default()
+                .fg(if failed == 0 { Color::DarkGray } else { Color::Red })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("运行 {running}"),
+            Style::default()
+                .fg(if running == 0 {
+                    Color::DarkGray
+                } else {
+                    Color::Yellow
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
     if state.checks.is_empty() {
         lines.push(Line::from(Span::styled(
             "本轮验证尚未开始",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for check in state.checks.iter().take(7) {
+        for check in state.checks.iter().take(6) {
             let (marker, color) = match check.success {
                 Some(true) => ("通过", Color::Green),
                 Some(false) => ("失败", Color::Red),
@@ -539,7 +585,7 @@ fn draw_checks(frame: &mut Frame, area: Rect, state: &RunState) {
                     format!("{marker}  "),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(compact(&check.name, 58)),
+                Span::raw(compact(&check.name, 56)),
                 Span::styled(
                     format!("  {}", check_elapsed(check, now)),
                     Style::default().fg(Color::Cyan),
@@ -548,25 +594,35 @@ fn draw_checks(frame: &mut Frame, area: Rect, state: &RunState) {
         }
     }
 
-    lines.push(Line::from(Span::styled(
-        "最近事件",
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-    )));
-    for event in state.timeline.iter().rev().take(4).rev() {
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel("验证"))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn draw_recent_events(frame: &mut Frame, area: Rect, state: &RunState) {
+    let mut lines = Vec::new();
+    for event in state.timeline.iter().rev().take(6).rev() {
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{:<14}", event_name_zh(&event.name)),
-                Style::default().fg(Color::DarkGray),
+                format!("{:<10}", event_name_zh(&event.name)),
+                Style::default().fg(Color::Magenta),
             ),
             Span::raw(event_detail_zh(&event.name, &event.detail)),
         ]));
     }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "等待事件",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("验证 + 最近事件"))
+            .block(panel("最近事件"))
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -574,6 +630,7 @@ fn draw_checks(frame: &mut Frame, area: Rect, state: &RunState) {
 
 fn draw_footer(frame: &mut Frame, area: Rect, replay: &RunReplay, live: bool) {
     let mode = if live { "实时" } else { "回放" };
+    let (passed, failed, running) = check_counts(&replay.state);
     let line = Line::from(vec![
         Span::styled(
             format!(" {mode} "),
@@ -583,13 +640,76 @@ fn draw_footer(frame: &mut Frame, area: Rect, replay: &RunReplay, live: bool) {
         ),
         Span::raw(format!(" 运行={}  ", replay.state.run_id)),
         Span::styled(
+            format!("事件={}  ", replay.state.timeline.len()),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(format!(
+            "变更={}  风险={}  验证={passed}/{failed}/{running}  ",
+            replay.state.changed_files.len(),
+            replay.state.risk_findings.len()
+        )),
+        Span::styled(
             format!("来源={}  ", source_zh(replay.source.as_str())),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::raw("自动刷新=250ms  "),
-        Span::styled("q/esc 退出 · r 立即刷新", Style::default().fg(Color::White)),
+        Span::raw("刷新=250ms  "),
+        Span::styled("q/esc 退出 · r 刷新", Style::default().fg(Color::White)),
     ]);
     frame.render_widget(Paragraph::new(line).block(panel("观察器")), area);
+}
+
+fn attempt_label(state: &RunState) -> String {
+    if state.max_loops == 0 {
+        state.attempt.to_string()
+    } else {
+        format!("{}/{}", state.attempt, state.max_loops)
+    }
+}
+
+fn current_stage_elapsed_ms(state: &RunState, now: u64) -> Option<u64> {
+    match state.stage.as_str() {
+        "TASK" | "PREPARE" => preparation_elapsed_ms(state, now),
+        "ROUTE" => state.stage_elapsed_ms("ROUTE", 0, now),
+        "DONE" => Some(0),
+        stage => state.stage_elapsed_ms(stage, state.attempt, now),
+    }
+}
+
+fn preparation_elapsed_ms(state: &RunState, now: u64) -> Option<u64> {
+    let started = state.started_ms?;
+    let route_started = state
+        .timings
+        .iter()
+        .find(|timing| timing.stage == "ROUTE")
+        .map(|timing| timing.started_ms)
+        .unwrap_or(now);
+    Some(route_started.saturating_sub(started))
+}
+
+fn agent_activity_summary(state: &RunState, now: u64) -> String {
+    let age = state
+        .agent_last_output_ms
+        .map(|timestamp| format!("最后活动 {} 前", format_duration(now.saturating_sub(timestamp))))
+        .unwrap_or_else(|| "尚无活动".to_owned());
+    let heartbeat = state
+        .agent_heartbeat_elapsed_secs
+        .map(|seconds| format!(" · 心跳 {seconds}秒"))
+        .unwrap_or_default();
+    format!("{age}{heartbeat}")
+}
+
+fn check_counts(state: &RunState) -> (usize, usize, usize) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut running = 0;
+    for check in &state.checks {
+        match check.success {
+            Some(true) => passed += 1,
+            Some(false) => failed += 1,
+            None => running += 1,
+        }
+    }
+    (passed, failed, running)
 }
 
 fn check_elapsed(check: &CheckState, now_ms: u64) -> String {
@@ -659,14 +779,6 @@ fn event_name_zh(name: &str) -> &'static str {
     }
 }
 
-fn event_summary_zh(name: &str, detail: &str) -> String {
-    format!(
-        "{} · {}",
-        event_name_zh(name),
-        event_detail_zh(name, detail)
-    )
-}
-
 fn event_detail_zh(name: &str, detail: &str) -> String {
     match (name, detail) {
         ("scope_evaluated", "scope accepted") => "范围检查通过".to_owned(),
@@ -700,16 +812,33 @@ fn source_zh(source: &str) -> &'static str {
     }
 }
 
-fn split_horizontal(area: Rect, left: u16, right: u16) -> std::rc::Rc<[Rect]> {
-    Layout::default()
+fn split_horizontal(area: Rect, left_percent: u16) -> [Rect; 2] {
+    let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(left), Constraint::Percentage(right)])
-        .split(area)
+        .constraints([
+            Constraint::Percentage(left_percent),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    [chunks[0], chunks[2]]
+}
+
+fn split_vertical(area: Rect, top_percent: u16) -> [Rect; 2] {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(top_percent),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    [chunks[0], chunks[2]]
 }
 
 fn panel(title: &'static str) -> Block<'static> {
     Block::default()
-        .title(title)
+        .title(format!(" {title} "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
 }
@@ -717,7 +846,7 @@ fn panel(title: &'static str) -> Block<'static> {
 fn kv(label: &'static str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            format!("{label:<8}"),
+            format!("{label}  "),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -757,47 +886,4 @@ fn harness_state_dir(workspace: &Path) -> Result<PathBuf> {
     let git = GitRepo::new(workspace);
     git.ensure_repository()?;
     git.harness_state_dir()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::run_state::StageTiming;
-
-    #[test]
-    fn compact_collapses_multiline_failure_output() {
-        let value = "verification failed\n  Diff in src/main.rs\n    let value = 1;";
-        assert_eq!(
-            compact(value, 200),
-            "verification failed Diff in src/main.rs let value = 1;"
-        );
-    }
-
-    #[test]
-    fn compact_truncates_long_failure_output() {
-        assert_eq!(compact("abcdefgh", 5), "abcde…");
-    }
-
-    #[test]
-    fn duration_is_human_readable_in_chinese() {
-        assert_eq!(format_duration(420), "420ms");
-        assert_eq!(format_duration(1_500), "1.5秒");
-        assert_eq!(format_duration(125_400), "2分5.4秒");
-    }
-
-    #[test]
-    fn preparation_time_ends_when_routing_starts() {
-        let state = RunState {
-            started_ms: Some(1_000),
-            timings: vec![StageTiming {
-                attempt: 0,
-                stage: "ROUTE".to_owned(),
-                started_ms: 1_350,
-                duration_ms: Some(150),
-            }],
-            ..RunState::default()
-        };
-        assert_eq!(preparation_elapsed_ms(&state, 5_000), Some(350));
-        assert_eq!(state.stage_elapsed_ms("ROUTE", 0, 5_000), Some(150));
-    }
 }
