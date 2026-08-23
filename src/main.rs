@@ -7,6 +7,7 @@ mod events;
 mod evidence;
 mod git;
 mod invariants;
+mod logging;
 mod observer;
 mod policy;
 mod proposal;
@@ -82,6 +83,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    logging::init();
     let cli = Cli::parse();
 
     match cli.command {
