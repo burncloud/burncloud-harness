@@ -32,6 +32,28 @@ pub enum HarnessEvent {
         agent: String,
         attempt: u32,
     },
+    AgentTimeBudgetConfigured {
+        attempt: u32,
+        soft_limit_secs: Option<u64>,
+        hard_limit_secs: Option<u64>,
+        idle_warning_secs: Option<u64>,
+    },
+    AgentSoftLimitReached {
+        attempt: u32,
+        elapsed_secs: u64,
+        soft_limit_secs: u64,
+    },
+    AgentIdleWarning {
+        attempt: u32,
+        elapsed_secs: u64,
+        idle_secs: u64,
+        idle_warning_secs: u64,
+    },
+    AgentHardTimeout {
+        attempt: u32,
+        elapsed_secs: u64,
+        hard_limit_secs: u64,
+    },
     AgentOutput {
         attempt: u32,
         stream: String,

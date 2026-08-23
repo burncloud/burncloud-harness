@@ -60,6 +60,12 @@ pub struct RunState {
     pub agent_activity: Vec<AgentActivity>,
     pub agent_last_output_ms: Option<u64>,
     pub agent_heartbeat_elapsed_secs: Option<u64>,
+    pub agent_soft_limit_secs: Option<u64>,
+    pub agent_hard_limit_secs: Option<u64>,
+    pub agent_idle_warning_secs: Option<u64>,
+    pub agent_soft_limit_reached: bool,
+    pub agent_idle_warning_active: bool,
+    pub agent_hard_timed_out: bool,
     pub timings: Vec<StageTiming>,
     pub started_ms: Option<u64>,
     pub finished_ms: Option<u64>,
@@ -89,6 +95,12 @@ impl Default for RunState {
             agent_activity: Vec::new(),
             agent_last_output_ms: None,
             agent_heartbeat_elapsed_secs: None,
+            agent_soft_limit_secs: None,
+            agent_hard_limit_secs: None,
+            agent_idle_warning_secs: None,
+            agent_soft_limit_reached: false,
+            agent_idle_warning_active: false,
+            agent_hard_timed_out: false,
             timings: Vec::new(),
             started_ms: None,
             finished_ms: None,
@@ -167,6 +179,24 @@ impl RunState {
                 self.agent_activity.clear();
                 self.agent_last_output_ms = None;
                 self.agent_heartbeat_elapsed_secs = None;
+                self.agent_soft_limit_reached = false;
+                self.agent_idle_warning_active = false;
+                self.agent_hard_timed_out = false;
+            }
+            "agent_time_budget_configured" => {
+                self.agent_soft_limit_secs = payload.get("soft_limit_secs").and_then(Value::as_u64);
+                self.agent_hard_limit_secs = payload.get("hard_limit_secs").and_then(Value::as_u64);
+                self.agent_idle_warning_secs =
+                    payload.get("idle_warning_secs").and_then(Value::as_u64);
+            }
+            "agent_soft_limit_reached" => {
+                self.agent_soft_limit_reached = true;
+            }
+            "agent_idle_warning" => {
+                self.agent_idle_warning_active = true;
+            }
+            "agent_hard_timeout" => {
+                self.agent_hard_timed_out = true;
             }
             "agent_output" => {
                 let line = payload
@@ -189,6 +219,7 @@ impl RunState {
                         self.agent_activity.drain(0..remove);
                     }
                     self.agent_last_output_ms = timestamp_ms;
+                    self.agent_idle_warning_active = false;
                 }
             }
             "agent_heartbeat" => {
@@ -389,8 +420,16 @@ fn stage_for(event: &str) -> &'static str {
     match event {
         "task_started" | "contract_loaded" | "run_started" => "TASK",
         "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
-        "loop_started" | "agent_started" | "agent_output" | "agent_heartbeat"
-        | "agent_finished" | "attempt_started" => "AGENT",
+        "loop_started"
+        | "agent_started"
+        | "agent_time_budget_configured"
+        | "agent_soft_limit_reached"
+        | "agent_idle_warning"
+        | "agent_hard_timeout"
+        | "agent_output"
+        | "agent_heartbeat"
+        | "agent_finished"
+        | "attempt_started" => "AGENT",
         "diff_detected" | "git_head_checked" | "scope_evaluated" => "SCOPE",
         "invariant_impact_assessed" | "invariant_expanded" => "INVARIANTS",
         "risk_assessed" | "risk_detected" => "RISK",
@@ -423,6 +462,33 @@ fn detail_for(payload: &Value, name: &str) -> String {
             .and_then(Value::as_u64)
             .map(|seconds| format!("agent alive for {seconds}s"))
             .unwrap_or_else(|| "agent heartbeat".to_owned());
+    }
+    if name == "agent_time_budget_configured" {
+        let soft = payload
+            .get("soft_limit_secs")
+            .and_then(Value::as_u64)
+            .map(|seconds| format!("soft={}s", seconds))
+            .unwrap_or_else(|| "soft=off".to_owned());
+        let hard = payload
+            .get("hard_limit_secs")
+            .and_then(Value::as_u64)
+            .map(|seconds| format!("hard={}s", seconds))
+            .unwrap_or_else(|| "hard=off".to_owned());
+        let idle = payload
+            .get("idle_warning_secs")
+            .and_then(Value::as_u64)
+            .map(|seconds| format!("idle={}s", seconds))
+            .unwrap_or_else(|| "idle=off".to_owned());
+        return format!("{soft} {hard} {idle}");
+    }
+    if name == "agent_soft_limit_reached" {
+        return "soft convergence target reached".to_owned();
+    }
+    if name == "agent_idle_warning" {
+        return "agent idle warning".to_owned();
+    }
+    if name == "agent_hard_timeout" {
+        return "agent hard time budget reached".to_owned();
     }
     if let Some(reason) = payload
         .get("reason")
@@ -574,6 +640,48 @@ mod tests {
         assert_eq!(state.total_elapsed_ms(2_900), Some(1_900));
         assert_eq!(state.status, "PASSED");
         assert_eq!(state.stage, "DONE");
+    }
+
+    #[test]
+    fn reducer_tracks_agent_time_budget_without_leaving_agent_stage() {
+        let mut state = RunState::default();
+        state.apply_at(&json!({"type": "loop_started", "attempt": 1}), Some(1_000));
+        state.apply_at(
+            &json!({
+                "type": "agent_time_budget_configured",
+                "attempt": 1,
+                "soft_limit_secs": 900,
+                "hard_limit_secs": 1500,
+                "idle_warning_secs": 300
+            }),
+            Some(1_010),
+        );
+        state.apply_at(
+            &json!({
+                "type": "agent_soft_limit_reached",
+                "attempt": 1,
+                "elapsed_secs": 900,
+                "soft_limit_secs": 900
+            }),
+            Some(901_000),
+        );
+        state.apply_at(
+            &json!({
+                "type": "agent_idle_warning",
+                "attempt": 1,
+                "elapsed_secs": 1_000,
+                "idle_secs": 300,
+                "idle_warning_secs": 300
+            }),
+            Some(1_001_000),
+        );
+
+        assert_eq!(state.stage, "AGENT");
+        assert_eq!(state.agent_soft_limit_secs, Some(900));
+        assert_eq!(state.agent_hard_limit_secs, Some(1500));
+        assert_eq!(state.agent_idle_warning_secs, Some(300));
+        assert!(state.agent_soft_limit_reached);
+        assert!(state.agent_idle_warning_active);
     }
 
     #[test]

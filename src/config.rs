@@ -77,6 +77,42 @@ pub struct AgentSpec {
     pub args: Vec<String>,
     #[serde(default = "default_true")]
     pub append_prompt: bool,
+    #[serde(default)]
+    pub soft_timeout_minutes: Option<u64>,
+    #[serde(default)]
+    pub hard_timeout_minutes: Option<u64>,
+    #[serde(default)]
+    pub idle_timeout_minutes: Option<u64>,
+}
+
+impl AgentSpec {
+    pub fn soft_timeout_secs(&self) -> Option<u64> {
+        self.soft_timeout_minutes.map(|minutes| minutes * 60)
+    }
+
+    pub fn hard_timeout_secs(&self) -> Option<u64> {
+        self.hard_timeout_minutes.map(|minutes| minutes * 60)
+    }
+
+    pub fn idle_timeout_secs(&self) -> Option<u64> {
+        self.idle_timeout_minutes.map(|minutes| minutes * 60)
+    }
+
+    pub fn time_budget_prompt_text(&self) -> String {
+        let soft = self
+            .soft_timeout_minutes
+            .map(|minutes| format!("- Soft convergence target: {minutes} minutes"))
+            .unwrap_or_else(|| "- Soft convergence target: not configured".to_owned());
+        let hard = self
+            .hard_timeout_minutes
+            .map(|minutes| format!("- Hard per-attempt limit: {minutes} minutes"))
+            .unwrap_or_else(|| "- Hard per-attempt limit: not configured".to_owned());
+        let idle = self
+            .idle_timeout_minutes
+            .map(|minutes| format!("- Idle warning threshold: {minutes} minutes without output"))
+            .unwrap_or_else(|| "- Idle warning threshold: not configured".to_owned());
+        format!("{soft}\n{hard}\n{idle}")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -116,6 +152,31 @@ impl TaskSpec {
         }
         if self.agent.program.trim().is_empty() {
             bail!("agent.program must not be empty");
+        }
+        for (name, value) in [
+            ("soft_timeout_minutes", self.agent.soft_timeout_minutes),
+            ("hard_timeout_minutes", self.agent.hard_timeout_minutes),
+            ("idle_timeout_minutes", self.agent.idle_timeout_minutes),
+        ] {
+            if value == Some(0) {
+                bail!("agent.{name} must be at least 1 when declared");
+            }
+        }
+        if let (Some(soft), Some(hard)) = (
+            self.agent.soft_timeout_minutes,
+            self.agent.hard_timeout_minutes,
+        ) {
+            if soft >= hard {
+                bail!("agent.soft_timeout_minutes must be less than agent.hard_timeout_minutes");
+            }
+        }
+        if let (Some(idle), Some(hard)) = (
+            self.agent.idle_timeout_minutes,
+            self.agent.hard_timeout_minutes,
+        ) {
+            if idle >= hard {
+                bail!("agent.idle_timeout_minutes must be less than agent.hard_timeout_minutes");
+            }
         }
         for context_file in &self.context_files {
             if context_file.trim().is_empty() {
@@ -240,6 +301,17 @@ fn default_true() -> bool {
 mod tests {
     use super::*;
 
+    fn agent() -> AgentSpec {
+        AgentSpec {
+            program: "agent".into(),
+            args: vec![],
+            append_prompt: true,
+            soft_timeout_minutes: None,
+            hard_timeout_minutes: None,
+            idle_timeout_minutes: None,
+        }
+    }
+
     #[test]
     fn rejects_empty_allowlist() {
         let task = TaskSpec {
@@ -253,11 +325,7 @@ mod tests {
                 avoid: vec![],
                 max_changed_files: None,
             },
-            agent: AgentSpec {
-                program: "agent".into(),
-                args: vec![],
-                append_prompt: true,
-            },
+            agent: agent(),
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
@@ -279,17 +347,45 @@ mod tests {
                 avoid: vec![],
                 max_changed_files: Some(0),
             },
-            agent: AgentSpec {
-                program: "agent".into(),
-                args: vec![],
-                append_prompt: true,
-            },
+            agent: agent(),
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
         };
 
         assert!(task.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_agent_time_budgets() {
+        let mut task = TaskSpec {
+            name: "test".into(),
+            goal: "do something".into(),
+            workspace: ".".into(),
+            max_loops: 1,
+            area: BurncloudArea::Ui,
+            scope: ScopeSpec {
+                allowed: vec!["crates/client/**".into()],
+                avoid: vec![],
+                max_changed_files: None,
+            },
+            agent: agent(),
+            context_files: vec![],
+            resolved_context_files: vec![],
+            extra_checks: vec![],
+        };
+
+        task.agent.soft_timeout_minutes = Some(25);
+        task.agent.hard_timeout_minutes = Some(25);
+        assert!(task.validate().is_err());
+
+        task.agent.soft_timeout_minutes = Some(15);
+        task.agent.hard_timeout_minutes = Some(25);
+        task.agent.idle_timeout_minutes = Some(25);
+        assert!(task.validate().is_err());
+
+        task.agent.idle_timeout_minutes = Some(5);
+        assert!(task.validate().is_ok());
     }
 
     #[test]
@@ -309,6 +405,9 @@ mod tests {
                 program: "codex".into(),
                 args: vec!["exec".into(), "--full-auto".into()],
                 append_prompt: true,
+                soft_timeout_minutes: None,
+                hard_timeout_minutes: None,
+                idle_timeout_minutes: None,
             },
             context_files: vec![],
             resolved_context_files: vec![],
@@ -354,6 +453,9 @@ agent:
   program: codex
   args:
     - exec
+  soft_timeout_minutes: 15
+  hard_timeout_minutes: 25
+  idle_timeout_minutes: 5
 context_files:
   - ../../docs/ui/contract.md
 "#,
@@ -364,6 +466,9 @@ context_files:
         let expected = context_path.canonicalize().unwrap();
 
         assert_eq!(task.scope.max_changed_files, Some(8));
+        assert_eq!(task.agent.soft_timeout_minutes, Some(15));
+        assert_eq!(task.agent.hard_timeout_minutes, Some(25));
+        assert_eq!(task.agent.idle_timeout_minutes, Some(5));
         assert_eq!(task.resolved_context_files.len(), 1);
         assert_eq!(task.resolved_context_files[0].absolute_path, expected);
         assert!(task
@@ -397,6 +502,9 @@ context_files:
                     "danger-full-access".into(),
                 ],
                 append_prompt: true,
+                soft_timeout_minutes: None,
+                hard_timeout_minutes: None,
+                idle_timeout_minutes: None,
             },
             context_files: vec![],
             resolved_context_files: vec![],
