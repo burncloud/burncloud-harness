@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     thread,
     time::Duration,
@@ -27,6 +28,7 @@ pub struct UiDaemonOptions {
     pub source_workspace: PathBuf,
     pub source_revision: String,
     pub plan_only: bool,
+    pub status_only: bool,
     pub once: bool,
     pub retry_delay: Duration,
 }
@@ -83,6 +85,40 @@ enum ActivePhase {
     PassedAwaitingCommit,
 }
 
+struct DaemonLease {
+    path: PathBuf,
+}
+
+impl DaemonLease {
+    fn acquire(state_dir: &Path) -> Result<Self> {
+        let path = state_dir.join("daemon.lock");
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                writeln!(file, "{}", std::process::id())?;
+                file.sync_all()?;
+                Ok(Self { path })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let owner = fs::read_to_string(&path).unwrap_or_else(|_| "unknown".to_owned());
+                bail!(
+                    "another UI migration daemon owns {} (pid {})",
+                    path.display(),
+                    owner.trim()
+                )
+            }
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to acquire {}", path.display()))
+            }
+        }
+    }
+}
+
+impl Drop for DaemonLease {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub fn run(options: UiDaemonOptions) -> Result<()> {
     let workspace = options
         .workspace
@@ -101,6 +137,10 @@ pub fn run(options: UiDaemonOptions) -> Result<()> {
     fs::create_dir_all(&state_dir)?;
     let state_path = state_dir.join("state.json");
     let mut state = load_state(&state_path, &branch, &options.source_revision)?;
+    if options.status_only {
+        println!("{}", serde_json::to_string_pretty(&state)?);
+        return Ok(());
+    }
     let tasks = load_tasks(
         &options.tasks_dir,
         &workspace,
@@ -127,6 +167,7 @@ pub fn run(options: UiDaemonOptions) -> Result<()> {
         return Ok(());
     }
 
+    let _lease = DaemonLease::acquire(&state_dir)?;
     if state.active.is_none() {
         repo.ensure_clean()?;
     }

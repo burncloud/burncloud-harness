@@ -71,6 +71,8 @@ enum Commands {
         #[arg(long)]
         plan: bool,
         #[arg(long)]
+        status: bool,
+        #[arg(long)]
         once: bool,
         #[arg(long, default_value_t = 15)]
         retry_delay_seconds: u64,
@@ -138,6 +140,7 @@ fn main() -> Result<()> {
             source_workspace,
             source_revision,
             plan,
+            status,
             once,
             retry_delay_seconds,
         } => ui_daemon::run(ui_daemon::UiDaemonOptions {
@@ -146,6 +149,7 @@ fn main() -> Result<()> {
             source_workspace,
             source_revision,
             plan_only: plan,
+            status_only: status,
             once,
             retry_delay: std::time::Duration::from_secs(retry_delay_seconds),
         })?,
