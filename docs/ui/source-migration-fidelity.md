@@ -3,13 +3,13 @@ doc_id: ui.source-migration-fidelity
 doc_type: migration-standard
 truth: target
 status: approved
-version: 1.0
+version: 1.1
 parent:
   - docs/ui/product-standard.md
   - docs/ui/agent-execution.md
 ---
 
-# BurnCloud Source UI Migration Fidelity v1.0
+# BurnCloud Source UI Migration Fidelity v1.1
 
 ## 1. Purpose
 
@@ -158,7 +158,79 @@ The report must explicitly list any remaining mismatch.
 
 Statements such as "implemented the overview" or "product check passed" are not sufficient evidence.
 
-## 9. Failure Examples
+## 9. Convergence Protocol
+
+Source-port work must converge from large structural differences toward small visual differences. The Agent must not repeatedly rediscover the whole UI on every Harness attempt.
+
+### 9.1 Initial pass
+
+The first attempt uses this order:
+
+```text
+SOURCE PAGE + SHARED LAYOUT
+        ↓
+CURRENT TARGET PAGE + TARGET LAYOUT/CSS
+        ↓
+DELTA LIST
+        ↓
+STRUCTURE
+        ↓
+CONTENT/TRUTHFUL STATE
+        ↓
+SPACING / TYPOGRAPHY
+        ↓
+VERIFY
+```
+
+Before the first edit, identify the concrete differences between source and target. Once source ownership and target ownership are known, stop broad repository exploration and implement those differences.
+
+Task context has two reading levels:
+
+- **Primary context** — page contract, source page, source shared layout, source-fidelity standard, and directly relevant design/IA documents. Read these first.
+- **Supporting context** — locale files, shared component libraries, additional product documents, data fixtures, and other references. Consult these only when a specific delta requires them.
+
+A long context list is not a requirement to serially read every file before every edit.
+
+### 9.2 Revision pass
+
+Any later attempt that already has a real diff or Harness feedback is a revision pass.
+
+The Agent must:
+
+1. inspect the current Git diff first;
+2. read the previous Harness/human feedback;
+3. convert feedback into a small ordered delta list;
+4. preserve already-correct sections;
+5. reopen only the source/contract evidence required by the active delta;
+6. make the smallest correction at the narrowest layer;
+7. verify the corrected delta before moving on.
+
+Revision must not restart from a blank mental model or broadly rewrite an already recognizable page.
+
+Correction layer priority:
+
+```text
+spacing / visual mismatch
+    -> local CSS/layout
+
+missing landmark / wrong hierarchy
+    -> page/component structure
+
+truthful-state mismatch
+    -> data/content wiring
+
+only widen further when evidence requires it
+```
+
+This ordering exists to prevent a small spacing rejection from turning into another full-page rewrite.
+
+### 9.3 Completion discipline
+
+A later attempt may inspect only the previously rejected areas plus their immediate layout dependencies. It does not need to re-prove unrelated sections that the current diff did not disturb.
+
+However, every attempt must still obey BurnCloud scope, invariant, risk, and verification gates. Convergence reduces repeated exploration; it does not weaken quality control.
+
+## 10. Failure Examples
 
 The following must be treated as migration failure even when Rust compiles:
 
@@ -168,8 +240,10 @@ The following must be treated as migration failure even when Rust compiles:
 - Agent changes many unrelated pages during a one-page migration.
 - Page uses correct text but visibly different information hierarchy.
 - Mock values are copied into production as if real.
+- A revision pass rereads broad context and rewrites already-correct regions instead of fixing the rejected delta.
+- A local spacing mismatch causes unrelated Rust component or routing changes without evidence.
 
-## 10. Completion Rule
+## 11. Completion Rule
 
 A source-port page is complete only when all of these are true:
 
