@@ -475,18 +475,21 @@ fn inspect_pixel_match(
             &local,
             &output_dir.join(diff_name),
             config.channel_tolerance,
+            name,
         )?;
         let changed_ratio = metrics["changed_pixel_ratio"].as_f64().unwrap_or(1.0);
         let mean_delta = metrics["mean_channel_delta"].as_f64().unwrap_or(255.0);
+        let worst_regions = worst_region_summary(&metrics, 3);
         if changed_ratio > config.max_changed_pixel_ratio
             || mean_delta > config.max_mean_channel_delta
         {
             failures.push(format!(
-                "{name} pixel mismatch: changed ratio {:.8} (max {:.8}), mean channel delta {:.6} (max {:.6}); diff {}",
+                "{name} pixel mismatch: changed ratio {:.8} (max {:.8}), mean channel delta {:.6} (max {:.6}); worst regions: {}; diff {}",
                 changed_ratio,
                 config.max_changed_pixel_ratio,
                 mean_delta,
                 config.max_mean_channel_delta,
+                worst_regions,
                 output_dir.join(diff_name).display()
             ));
         }
@@ -501,6 +504,7 @@ fn compare_pngs(
     local_path: &Path,
     diff_path: &Path,
     channel_tolerance: u8,
+    viewport: &str,
 ) -> Result<Value> {
     let reference = ImageReader::open(reference_path)
         .with_context(|| format!("failed to open {}", reference_path.display()))?
@@ -566,6 +570,7 @@ fn compare_pngs(
     } else {
         channel_delta_sum as f64 / (total_pixels as f64 * 4.0)
     };
+    let regions = region_metrics(&reference, &local, channel_tolerance, viewport);
 
     Ok(json!({
         "reference_width": reference.width(),
@@ -578,8 +583,110 @@ fn compare_pngs(
         "mean_channel_delta": mean_channel_delta,
         "maximum_channel_delta": maximum_channel_delta,
         "channel_tolerance": channel_tolerance,
+        "regions": regions,
         "diff": diff_path,
     }))
+}
+
+fn region_metrics(
+    reference: &RgbaImage,
+    local: &RgbaImage,
+    channel_tolerance: u8,
+    viewport: &str,
+) -> Value {
+    let regions: &[(&str, u32, u32, u32, u32)] = if viewport == "mobile" {
+        &[
+            ("sidebar", 0, 0, 230, MOBILE_HEIGHT),
+            ("main-topbar", 230, 0, MOBILE_WIDTH, 56),
+            ("main-header", 230, 56, MOBILE_WIDTH, 280),
+            ("main-upper", 230, 280, MOBILE_WIDTH, 560),
+            ("main-lower", 230, 560, MOBILE_WIDTH, MOBILE_HEIGHT),
+        ]
+    } else {
+        &[
+            ("sidebar", 0, 0, 230, DESKTOP_HEIGHT),
+            ("topbar", 230, 0, DESKTOP_WIDTH, 56),
+            ("page-header", 230, 56, DESKTOP_WIDTH, 220),
+            ("metrics", 230, 220, DESKTOP_WIDTH, 380),
+            ("models", 230, 380, DESKTOP_WIDTH, 710),
+            ("activity", 230, 710, DESKTOP_WIDTH, DESKTOP_HEIGHT),
+        ]
+    };
+
+    let mut values = serde_json::Map::new();
+    for &(name, left, top, right, bottom) in regions {
+        let right = right.min(reference.width().max(local.width()));
+        let bottom = bottom.min(reference.height().max(local.height()));
+        let mut changed_pixels = 0u64;
+        let mut channel_delta_sum = 0u64;
+        let mut maximum_channel_delta = 0u8;
+        let total_pixels =
+            u64::from(right.saturating_sub(left)) * u64::from(bottom.saturating_sub(top));
+
+        for y in top..bottom {
+            for x in left..right {
+                let reference_pixel = image_pixel(reference, x, y);
+                let local_pixel = image_pixel(local, x, y);
+                let mut pixel_max = 0u8;
+                for channel in 0..4 {
+                    let delta = reference_pixel[channel].abs_diff(local_pixel[channel]);
+                    channel_delta_sum += u64::from(delta);
+                    pixel_max = pixel_max.max(delta);
+                    maximum_channel_delta = maximum_channel_delta.max(delta);
+                }
+                if pixel_max > channel_tolerance {
+                    changed_pixels += 1;
+                }
+            }
+        }
+
+        values.insert(
+            name.to_owned(),
+            json!({
+                "left": left,
+                "top": top,
+                "right": right,
+                "bottom": bottom,
+                "changed_pixels": changed_pixels,
+                "total_pixels": total_pixels,
+                "changed_pixel_ratio": if total_pixels == 0 { 0.0 } else { changed_pixels as f64 / total_pixels as f64 },
+                "mean_channel_delta": if total_pixels == 0 { 0.0 } else { channel_delta_sum as f64 / (total_pixels as f64 * 4.0) },
+                "maximum_channel_delta": maximum_channel_delta,
+            }),
+        );
+    }
+    Value::Object(values)
+}
+
+fn image_pixel(image: &RgbaImage, x: u32, y: u32) -> Rgba<u8> {
+    if x < image.width() && y < image.height() {
+        *image.get_pixel(x, y)
+    } else {
+        Rgba([0, 0, 0, 0])
+    }
+}
+
+fn worst_region_summary(metrics: &Value, limit: usize) -> String {
+    let Some(regions) = metrics["regions"].as_object() else {
+        return "unavailable".to_owned();
+    };
+    let mut ranked = regions
+        .iter()
+        .map(|(name, metrics)| {
+            (
+                name.as_str(),
+                metrics["changed_pixel_ratio"].as_f64().unwrap_or(1.0),
+                metrics["mean_channel_delta"].as_f64().unwrap_or(255.0),
+            )
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(name, ratio, mean)| format!("{name}={ratio:.6}/{mean:.3}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn set_viewport(tab: &headless_chrome::Tab, width: u32, height: u32) -> Result<()> {
@@ -845,7 +952,8 @@ mod tests {
         reference.save(&reference_path).unwrap();
         reference.save(&local_path).unwrap();
 
-        let identical = compare_pngs(&reference_path, &local_path, &diff_path, 0).unwrap();
+        let identical =
+            compare_pngs(&reference_path, &local_path, &diff_path, 0, "desktop").unwrap();
         assert_eq!(identical["changed_pixels"], 0);
         assert_eq!(identical["changed_pixel_ratio"], 0.0);
         assert!(diff_path.is_file());
@@ -853,9 +961,11 @@ mod tests {
         let mut changed = reference.clone();
         changed.put_pixel(1, 0, Rgba([255, 50, 60, 255]));
         changed.save(&local_path).unwrap();
-        let metrics = compare_pngs(&reference_path, &local_path, &diff_path, 0).unwrap();
+        let metrics = compare_pngs(&reference_path, &local_path, &diff_path, 0, "desktop").unwrap();
         assert_eq!(metrics["changed_pixels"], 1);
         assert_eq!(metrics["changed_pixel_ratio"], 0.5);
+        assert_eq!(metrics["regions"]["sidebar"]["changed_pixel_ratio"], 0.5);
+        assert!(worst_region_summary(&metrics, 1).starts_with("sidebar=0.500000/"));
         fs::remove_dir_all(root).unwrap();
     }
 }
