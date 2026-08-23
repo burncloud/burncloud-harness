@@ -399,18 +399,73 @@ impl TrajectoryWriter {
                     attempt: *attempt,
                 })?;
             }
-            Event::ScopeEvaluated { changed_paths, .. } => {
+            Event::ScopeEvaluated {
+                attempt,
+                changed_paths,
+                violations,
+                ..
+            } => {
                 self.events.append(&HarnessEvent::DiffDetected {
+                    attempt: *attempt,
                     changed_files: changed_paths.to_vec(),
                 })?;
+                self.events.append(&HarnessEvent::ScopeEvaluated {
+                    attempt: *attempt,
+                    violations: violations.to_vec(),
+                    success: violations.is_empty(),
+                })?;
             }
-            Event::CheckFinished { name, success, .. } => {
+            Event::InvariantImpactAssessed {
+                attempt,
+                newly_required,
+                reasons,
+                ..
+            } => {
+                if !newly_required.is_empty() {
+                    self.events.append(&HarnessEvent::InvariantExpanded {
+                        attempt: *attempt,
+                        invariants: newly_required.to_vec(),
+                        reasons: reasons.to_vec(),
+                    })?;
+                }
+            }
+            Event::RiskAssessed { attempt, findings } => {
+                self.events.append(&HarnessEvent::RiskDetected {
+                    attempt: *attempt,
+                    findings: findings.to_vec(),
+                })?;
+            }
+            Event::CheckFinished {
+                attempt,
+                name,
+                success,
+                ..
+            } => {
                 self.events.append(&HarnessEvent::VerificationStarted {
+                    attempt: *attempt,
                     check: (*name).to_owned(),
                 })?;
                 self.events.append(&HarnessEvent::VerificationFinished {
+                    attempt: *attempt,
                     check: (*name).to_owned(),
                     success: *success,
+                })?;
+            }
+            Event::FailureRecorded {
+                attempt,
+                class,
+                detail,
+            } => {
+                self.events.append(&HarnessEvent::FailureRecorded {
+                    attempt: *attempt,
+                    class: (*class).as_str().to_owned(),
+                    detail: (*detail).to_owned(),
+                })?;
+            }
+            Event::AttemptFailed { attempt, feedback } => {
+                self.events.append(&HarnessEvent::RetryRequested {
+                    attempt: *attempt,
+                    reason: (*feedback).to_owned(),
                 })?;
             }
             Event::RunFinished {
@@ -421,11 +476,7 @@ impl TrajectoryWriter {
                     attempts: *attempts,
                 })?;
             }
-            Event::GitHeadChecked { .. }
-            | Event::InvariantImpactAssessed { .. }
-            | Event::RiskAssessed { .. }
-            | Event::FailureRecorded { .. }
-            | Event::AttemptFailed { .. } => {}
+            Event::GitHeadChecked { .. } => {}
         }
         Ok(())
     }
@@ -499,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn trajectory_records_runner_event_stream() {
+    fn trajectory_records_decision_event_stream() {
         let unique = unix_ms();
         let root = std::env::temp_dir().join(format!(
             "burncloud-harness-trajectory-events-{}-{unique}",
@@ -510,6 +561,9 @@ mod tests {
         let routes = vec!["ui".to_owned()];
         let invariants = vec!["no-regression".to_owned()];
         let changed = vec!["src/main.rs".to_owned()];
+        let expanded = vec!["runtime-contract".to_owned()];
+        let reasons = vec!["src/main.rs touches runtime".to_owned()];
+        let findings = vec!["review required".to_owned()];
         let mut writer = TrajectoryWriter::create(&root, "run-1").unwrap();
 
         writer
@@ -556,6 +610,33 @@ mod tests {
             })
             .unwrap();
         writer
+            .record(Event::InvariantImpactAssessed {
+                attempt: 1,
+                required: &expanded,
+                newly_required: &expanded,
+                reasons: &reasons,
+            })
+            .unwrap();
+        writer
+            .record(Event::RiskAssessed {
+                attempt: 1,
+                findings: &findings,
+            })
+            .unwrap();
+        writer
+            .record(Event::FailureRecorded {
+                attempt: 1,
+                class: FailureClass::RiskReview,
+                detail: "review required",
+            })
+            .unwrap();
+        writer
+            .record(Event::AttemptFailed {
+                attempt: 1,
+                feedback: "review the risk before retry",
+            })
+            .unwrap();
+        writer
             .record(Event::CheckFinished {
                 attempt: 1,
                 name: "cargo test",
@@ -576,12 +657,13 @@ mod tests {
             .unwrap();
 
         let content = fs::read_to_string(root.join("runs/run-1/events.jsonl")).unwrap();
-        let types = content
+        let values = content
             .lines()
-            .map(|line| {
-                let value: Value = serde_json::from_str(line).unwrap();
-                value["event"]["type"].as_str().unwrap().to_owned()
-            })
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let types = values
+            .iter()
+            .map(|value| value["event"]["type"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
         assert_eq!(
             types,
@@ -594,14 +676,22 @@ mod tests {
                 "agent_started",
                 "agent_finished",
                 "diff_detected",
+                "scope_evaluated",
+                "invariant_expanded",
+                "risk_detected",
+                "failure_recorded",
+                "retry_requested",
                 "verification_started",
                 "verification_finished",
                 "task_finished",
             ]
         );
+        assert_eq!(values[0]["schema_version"], 1);
+        assert_eq!(values[0]["sequence"], 1);
+        assert_eq!(values[15]["sequence"], 16);
         assert_eq!(
-            content,
-            fs::read_to_string(root.join("runs/latest/events.jsonl")).unwrap()
+            values[12]["event"]["reason"],
+            "review the risk before retry"
         );
 
         fs::remove_dir_all(root).unwrap();

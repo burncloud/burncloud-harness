@@ -2,6 +2,10 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use anyhow::{Context, Result};
@@ -9,15 +13,23 @@ use serde::Serialize;
 
 use crate::events::HarnessEvent;
 
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone)]
 pub struct EventWriter {
     path: PathBuf,
+    sequence: Arc<AtomicU64>,
 }
 
 impl EventWriter {
     pub fn new(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref().to_path_buf();
+        let existing = fs::read_to_string(&path)
+            .map(|content| content.lines().count() as u64)
+            .unwrap_or(0);
         Self {
-            path: path.as_ref().to_path_buf(),
+            path,
+            sequence: Arc::new(AtomicU64::new(existing)),
         }
     }
 
@@ -26,7 +38,8 @@ impl EventWriter {
             fs::create_dir_all(parent)?;
         }
 
-        let line = serde_json::to_string(&EventRecord::new(event))?;
+        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let line = serde_json::to_string(&EventRecord::new(event, sequence))?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -95,29 +108,34 @@ impl RunEventWriter {
 
 #[derive(Debug, Serialize)]
 struct EventRecord<'a> {
-    timestamp: u64,
+    schema_version: u32,
+    sequence: u64,
+    timestamp_ms: u128,
     event: &'a HarnessEvent,
 }
 
 impl<'a> EventRecord<'a> {
-    fn new(event: &'a HarnessEvent) -> Self {
+    fn new(event: &'a HarnessEvent, sequence: u64) -> Self {
         Self {
-            timestamp: timestamp(),
+            schema_version: EVENT_SCHEMA_VERSION,
+            sequence,
+            timestamp_ms: timestamp_ms(),
             event,
         }
     }
 }
 
-fn timestamp() -> u64 {
+fn timestamp_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_state() -> PathBuf {
@@ -153,6 +171,15 @@ mod tests {
             fs::read_to_string(state.join("runs/latest/run_id")).unwrap(),
             "run-1\n"
         );
+
+        let records = primary
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[0]["schema_version"], EVENT_SCHEMA_VERSION);
+        assert_eq!(records[0]["sequence"], 1);
+        assert_eq!(records[1]["sequence"], 2);
+        assert!(records[0]["timestamp_ms"].as_u64().is_some());
 
         fs::remove_dir_all(state).unwrap();
     }

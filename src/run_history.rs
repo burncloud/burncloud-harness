@@ -7,6 +7,8 @@ use std::{
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
+use crate::event_writer::EVENT_SCHEMA_VERSION;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunSource {
     EventStream,
@@ -118,6 +120,7 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
     let mut stage = "TASK".to_owned();
     let mut final_status = None;
     let mut events = Vec::new();
+    let mut previous_sequence = 0;
 
     for (index, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
@@ -130,6 +133,11 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
                 index + 1
             )
         })?;
+
+        if artifact.source == RunSource::EventStream {
+            validate_event_record(&value, &artifact.path, index + 1, &mut previous_sequence)?;
+        }
+
         let payload = match artifact.source {
             RunSource::EventStream => value.get("event").unwrap_or(&value),
             RunSource::Trajectory => &value,
@@ -166,22 +174,78 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
     })
 }
 
+fn validate_event_record(
+    value: &Value,
+    path: &Path,
+    line: usize,
+    previous_sequence: &mut u64,
+) -> Result<()> {
+    if let Some(version) = value.get("schema_version").and_then(Value::as_u64) {
+        if version != u64::from(EVENT_SCHEMA_VERSION) {
+            bail!(
+                "unsupported Harness event schema {version} in {} at line {line}; supported schema is {}",
+                path.display(),
+                EVENT_SCHEMA_VERSION
+            );
+        }
+    }
+
+    if let Some(sequence) = value.get("sequence").and_then(Value::as_u64) {
+        if sequence <= *previous_sequence {
+            bail!(
+                "non-monotonic Harness event sequence {sequence} in {} at line {line}",
+                path.display()
+            );
+        }
+        *previous_sequence = sequence;
+    }
+
+    Ok(())
+}
+
 fn stage_for(event: &str) -> &'static str {
     match event {
         "task_started" | "contract_loaded" | "run_started" => "TASK",
         "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
         "loop_started" | "agent_started" | "agent_finished" | "attempt_started"
-        | "attempt_failed" => "AGENT",
-        "diff_detected" | "git_head_checked" | "scope_evaluated" | "invariant_impact_assessed" => {
-            "SCOPE"
-        }
-        "risk_assessed" => "RISK",
+        | "attempt_failed" | "retry_requested" | "failure_recorded" => "AGENT",
+        "diff_detected" | "git_head_checked" | "scope_evaluated" | "invariant_impact_assessed"
+        | "invariant_expanded" => "SCOPE",
+        "risk_assessed" | "risk_detected" => "RISK",
         "verification_started" | "verification_finished" | "check_finished" => "VERIFY",
         _ => "TASK",
     }
 }
 
 fn detail_for(payload: &Value, name: &str) -> String {
+    if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
+        return reason.to_owned();
+    }
+    if let Some(detail) = payload.get("detail").and_then(Value::as_str) {
+        if let Some(class) = payload.get("class").and_then(Value::as_str) {
+            return format!("{class}: {detail}");
+        }
+        return detail.to_owned();
+    }
+    if let Some(values) = string_array(payload, "violations") {
+        return if values.is_empty() {
+            "scope accepted".to_owned()
+        } else {
+            format!("scope violations: {}", values.join(", "))
+        };
+    }
+    if let Some(values) = string_array(payload, "findings") {
+        return if values.is_empty() {
+            "no risk findings".to_owned()
+        } else {
+            values.join("; ")
+        };
+    }
+    if let Some(values) = string_array(payload, "invariants") {
+        if !values.is_empty() {
+            return format!("new invariants: {}", values.join(", "));
+        }
+    }
     if let Some(check) = payload.get("check").and_then(Value::as_str) {
         return check.to_owned();
     }
@@ -192,6 +256,15 @@ fn detail_for(payload: &Value, name: &str) -> String {
         return format!("attempt {attempt}");
     }
     name.replace('_', " ")
+}
+
+fn string_array(value: &Value, key: &str) -> Option<Vec<String>> {
+    value
+        .get(key)?
+        .as_array()?
+        .iter()
+        .map(|item| item.as_str().map(str::to_owned))
+        .collect()
 }
 
 #[cfg(test)]
@@ -239,9 +312,9 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "{\"timestamp\":1,\"event\":{\"type\":\"task_started\",\"run_id\":\"200\",\"task\":\"buyer-overview\",\"area\":\"ui\"}}\n",
-                "{\"timestamp\":2,\"event\":{\"type\":\"verification_started\",\"check\":\"cargo test\"}}\n",
-                "{\"timestamp\":3,\"event\":{\"type\":\"task_finished\",\"success\":true,\"attempts\":1}}\n"
+                "{\"schema_version\":1,\"sequence\":1,\"timestamp_ms\":1,\"event\":{\"type\":\"task_started\",\"run_id\":\"200\",\"task\":\"buyer-overview\",\"area\":\"ui\"}}\n",
+                "{\"schema_version\":1,\"sequence\":2,\"timestamp_ms\":2,\"event\":{\"type\":\"retry_requested\",\"attempt\":1,\"reason\":\"scope expanded\"}}\n",
+                "{\"schema_version\":1,\"sequence\":3,\"timestamp_ms\":3,\"event\":{\"type\":\"task_finished\",\"success\":true,\"attempts\":1}}\n"
             ),
         )
         .unwrap();
@@ -254,7 +327,28 @@ mod tests {
 
         assert_eq!(replay.task, "buyer-overview");
         assert_eq!(replay.status, "PASSED");
-        assert_eq!(replay.events[1].detail, "cargo test");
+        assert_eq!(replay.events[1].detail, "scope expanded");
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn rejects_future_event_schema() {
+        let state = temp_state("future-schema");
+        let path = state.join("events.jsonl");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            &path,
+            "{\"schema_version\":99,\"sequence\":1,\"event\":{\"type\":\"task_started\"}}\n",
+        )
+        .unwrap();
+
+        let error = load(&RunArtifact {
+            run_id: "future".to_owned(),
+            path,
+            source: RunSource::EventStream,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("unsupported Harness event schema"));
         fs::remove_dir_all(state).unwrap();
     }
 
