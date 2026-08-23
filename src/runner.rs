@@ -155,14 +155,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 attempt,
                 previous_feedback.as_deref(),
             );
-            run_agent(
-                &workspace,
-                &task,
-                &prompt,
-                &state_dir,
-                &run_id,
-                attempt,
-            )?
+            run_agent(&workspace, &task, &prompt, &state_dir, &run_id, attempt)?
         } else {
             AgentResult {
                 success: true,
