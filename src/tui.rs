@@ -1,6 +1,6 @@
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -23,11 +23,14 @@ use crate::{
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
-pub fn list_runs() -> Result<()> {
-    let state_dir = harness_state_dir()?;
+pub fn list_runs(workspace: &Path) -> Result<()> {
+    let state_dir = harness_state_dir(workspace)?;
     let runs = run_history::discover(&state_dir)?;
     if runs.is_empty() {
-        println!("No Harness runs found.");
+        println!(
+            "No Harness runs found in target workspace {}.",
+            workspace.display()
+        );
         return Ok(());
     }
 
@@ -37,8 +40,8 @@ pub fn list_runs() -> Result<()> {
     Ok(())
 }
 
-pub fn run(requested_run: Option<&str>) -> Result<()> {
-    let state_dir = harness_state_dir()?;
+pub fn run(workspace: &Path, requested_run: Option<&str>) -> Result<()> {
+    let state_dir = harness_state_dir(workspace)?;
     let mut artifact = run_history::resolve(&state_dir, requested_run)?;
     let mut replay = run_history::load(&artifact)?;
 
@@ -65,7 +68,7 @@ pub fn run(requested_run: Option<&str>) -> Result<()> {
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    state_dir: &std::path::Path,
+    state_dir: &Path,
     requested_run: Option<&str>,
     artifact: &mut RunArtifact,
     replay: &mut RunReplay,
@@ -99,7 +102,7 @@ fn run_loop(
 }
 
 fn refresh_replay(
-    state_dir: &std::path::Path,
+    state_dir: &Path,
     requested_run: Option<&str>,
     artifact: &mut RunArtifact,
     replay: &mut RunReplay,
@@ -148,8 +151,8 @@ fn render_replay(replay: &RunReplay, live: bool) -> String {
     output
 }
 
-fn harness_state_dir() -> Result<PathBuf> {
-    let workspace = PathBuf::from(".").canonicalize()?;
+fn harness_state_dir(workspace: &Path) -> Result<PathBuf> {
+    let workspace = workspace.canonicalize()?;
     let git = GitRepo::new(workspace);
     git.ensure_repository()?;
     git.harness_state_dir()
