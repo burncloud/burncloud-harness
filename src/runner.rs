@@ -166,7 +166,15 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 attempt,
                 previous_feedback.as_deref(),
             );
-            run_agent(&workspace, &task, &prompt, &state_dir, &run_id, attempt)?
+            run_agent(
+                &workspace,
+                &task,
+                &prompt,
+                &state_dir,
+                &run_id,
+                attempt,
+                strict_visual,
+            )?
         } else {
             AgentResult {
                 success: true,
@@ -687,20 +695,28 @@ fn run_agent(
     state_dir: &std::path::Path,
     run_id: &str,
     attempt: u32,
+    strict_visual: bool,
 ) -> Result<AgentResult> {
-    let mut command = Command::new(&task.agent.program);
+    let (mut command, program_label) = if strict_visual {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/S", "/C", "dsh.cmd", "--profile", "headless"]);
+        (command, "dsh --profile headless".to_owned())
+    } else {
+        let mut command = Command::new(&task.agent.program);
+        command.args(&task.agent.args);
+        (command, task.agent.program.clone())
+    };
     command
-        .args(&task.agent.args)
         .current_dir(workspace)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if task.agent.append_prompt {
+    if strict_visual || task.agent.append_prompt {
         command.arg(prompt);
     }
 
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to start agent program '{}'", task.agent.program))?;
+        .with_context(|| format!("failed to start agent program '{program_label}'"))?;
     let stdout = child
         .stdout
         .take()
