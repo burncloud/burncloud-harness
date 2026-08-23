@@ -7,6 +7,7 @@ mod events;
 mod evidence;
 mod git;
 mod invariants;
+mod logging;
 mod observer;
 mod policy;
 mod proposal;
@@ -36,6 +37,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Tui {
+        #[arg(long, default_value = "../burncloud")]
+        workspace: PathBuf,
         #[arg(long)]
         run: Option<String>,
         #[arg(long)]
@@ -52,6 +55,8 @@ enum Commands {
     ExplainRun {
         #[arg(long)]
         run: String,
+        #[arg(long, default_value = "../burncloud")]
+        workspace: PathBuf,
     },
     Analyze {
         #[arg(default_value = ".")]
@@ -78,14 +83,19 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    logging::init();
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Tui { run, list } => {
+        Commands::Tui {
+            workspace,
+            run,
+            list,
+        } => {
             if list {
-                tui::list_runs()?;
+                tui::list_runs(&workspace)?;
             } else {
-                tui::run(run.as_deref())?;
+                tui::run(&workspace, run.as_deref())?;
             }
         }
         Commands::Doctor { workspace } => {
@@ -98,7 +108,7 @@ fn main() -> Result<()> {
             );
         }
         Commands::Explain { task } => explain_task(TaskSpec::load(task)?)?,
-        Commands::ExplainRun { run } => explain_run(&run)?,
+        Commands::ExplainRun { run, workspace } => explain_run(&workspace, &run)?,
         Commands::Analyze { workspace, limit } => analyze_workspace(workspace, limit)?,
         Commands::Recommend {
             workspace,
@@ -151,8 +161,8 @@ fn explain_task(task: TaskSpec) -> Result<()> {
     Ok(())
 }
 
-fn explain_run(run_id: &str) -> Result<()> {
-    let workspace = PathBuf::from(".").canonicalize()?;
+fn explain_run(workspace: &std::path::Path, run_id: &str) -> Result<()> {
+    let workspace = workspace.canonicalize()?;
     let git = git::GitRepo::new(workspace);
     git.ensure_repository()?;
     let state_dir = git.harness_state_dir()?;
