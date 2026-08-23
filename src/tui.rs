@@ -169,10 +169,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &RunState, live: bool) {
         ),
         status,
         Span::raw("   "),
-        Span::styled(
-            format!("MODE {mode}"),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(format!("MODE {mode}"), Style::default().fg(Color::White)),
         Span::raw("   "),
         Span::styled(
             "EVENTS -> REDUCER -> OBSERVER",
@@ -457,10 +454,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, replay: &RunReplay, live: bool) {
             Style::default().fg(Color::DarkGray),
         ),
         Span::raw("auto=250ms  "),
-        Span::styled(
-            "q/esc quit · r refresh",
-            Style::default().fg(Color::White),
-        ),
+        Span::styled("q/esc quit · r refresh", Style::default().fg(Color::White)),
     ]);
     frame.render_widget(Paragraph::new(line).block(panel("OBSERVER")), area);
 }
