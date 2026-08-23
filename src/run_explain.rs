@@ -50,7 +50,11 @@ pub fn render(state: &RunState) -> String {
                 Some(false) => "FAIL",
                 None => "RUNNING",
             };
-            output.push_str(&format!("- {status} · {}\n", check.name));
+            let timing = check
+                .duration_ms
+                .map(|ms| format!(" · {ms}ms"))
+                .unwrap_or_default();
+            output.push_str(&format!("- {status} · {}{timing}\n", check.name));
         }
     }
 
@@ -89,6 +93,8 @@ mod tests {
             checks: vec![CheckState {
                 name: "cargo test".to_owned(),
                 success: Some(true),
+                started_ms: Some(1_000),
+                duration_ms: Some(500),
             }],
             failures: vec![FailureState {
                 attempt: 1,
@@ -106,6 +112,6 @@ mod tests {
         assert!(explanation.contains("Result: PASSED"));
         assert!(explanation.contains("src/main.rs"));
         assert!(explanation.contains("risk_review"));
-        assert!(explanation.contains("PASS · cargo test"));
+        assert!(explanation.contains("PASS · cargo test · 500ms"));
     }
 }
