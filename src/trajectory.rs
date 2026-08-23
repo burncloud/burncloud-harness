@@ -9,7 +9,11 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{event_writer::RunEventWriter, events::HarnessEvent};
+use crate::{
+    event_writer::RunEventWriter,
+    events::HarnessEvent,
+    evidence::{EvidenceBundle, RunContract},
+};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -298,6 +302,7 @@ pub struct TrajectoryWriter {
     path: PathBuf,
     writer: BufWriter<File>,
     events: RunEventWriter,
+    evidence: EvidenceBundle,
     agent_program: Option<String>,
 }
 
@@ -313,24 +318,43 @@ impl TrajectoryWriter {
             .open(&path)
             .with_context(|| format!("failed to create trajectory {}", path.display()))?;
         let events = RunEventWriter::create(state_dir, run_id)?;
+        let evidence = EvidenceBundle::create(state_dir, run_id)?;
 
         Ok(Self {
             path,
             writer: BufWriter::new(file),
             events,
+            evidence,
             agent_program: None,
         })
     }
 
     pub fn record(&mut self, event: Event<'_>) -> Result<()> {
+        let finish = match &event {
+            Event::RunFinished {
+                success,
+                attempts,
+                changed_paths,
+            } => Some((*success, *attempts, changed_paths.to_vec())),
+            _ => None,
+        };
+
         self.record_event_stream(&event)?;
+        self.record_evidence(&event)?;
+
         let envelope = EventEnvelope {
             ts_ms: unix_ms(),
             event,
         };
-        serde_json::to_writer(&mut self.writer, &envelope)?;
+        let line = serde_json::to_vec(&envelope)?;
+        self.writer.write_all(&line)?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;
+        self.evidence.write_trajectory_line(&line)?;
+
+        if let Some((success, attempts, changed_paths)) = finish {
+            self.evidence.finish(success, attempts, &changed_paths)?;
+        }
         Ok(())
     }
 
@@ -340,6 +364,43 @@ impl TrajectoryWriter {
 
     pub fn event_path(&self) -> &Path {
         self.events.path()
+    }
+
+    pub fn evidence_dir(&self) -> &Path {
+        self.evidence.run_dir()
+    }
+
+    fn record_evidence(&mut self, event: &Event<'_>) -> Result<()> {
+        match event {
+            Event::RunStarted {
+                task,
+                goal,
+                area,
+                max_loops,
+                allowed,
+                avoid,
+                context_files,
+                agent_program,
+                agent_args,
+                agent_append_prompt,
+                resumed_from,
+                ..
+            } => self.evidence.start(RunContract {
+                task,
+                goal,
+                area,
+                max_loops: *max_loops,
+                allowed,
+                avoid,
+                context_files,
+                agent_program,
+                agent_args,
+                agent_append_prompt: *agent_append_prompt,
+                resumed_from: *resumed_from,
+            }),
+            Event::ScopeEvaluated { .. } => self.evidence.snapshot_diff(),
+            _ => Ok(()),
+        }
     }
 
     fn record_event_stream(&mut self, event: &Event<'_>) -> Result<()> {
@@ -550,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn trajectory_records_decision_event_stream() {
+    fn trajectory_records_decision_event_stream_and_evidence_bundle() {
         let unique = unix_ms();
         let root = std::env::temp_dir().join(format!(
             "burncloud-harness-trajectory-events-{}-{unique}",
@@ -693,6 +754,24 @@ mod tests {
             values[12]["event"]["reason"],
             "review the risk before retry"
         );
+
+        let evidence_dir = writer.evidence_dir();
+        for file in [
+            "task.yaml",
+            "events.jsonl",
+            "trajectory.jsonl",
+            "diff.patch",
+            "summary.json",
+        ] {
+            assert!(evidence_dir.join(file).is_file(), "missing evidence {file}");
+        }
+        assert_eq!(
+            fs::read_to_string(writer.path()).unwrap(),
+            fs::read_to_string(evidence_dir.join("trajectory.jsonl")).unwrap()
+        );
+        let summary = fs::read_to_string(evidence_dir.join("summary.json")).unwrap();
+        assert!(summary.contains("\"status\": \"PASSED\""));
+        assert!(summary.contains("src/main.rs"));
 
         fs::remove_dir_all(root).unwrap();
     }
