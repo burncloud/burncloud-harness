@@ -188,7 +188,13 @@ fn verify_ui(task: TaskSpec) -> Result<()> {
         .visual
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("task '{}' has no visual contract", task.name))?;
-    println!("{}", ui_visual::run(&workspace, visual, None)?);
+    let visual_target = workspace
+        .join("target")
+        .join("burncloud-harness-visual-build");
+    println!(
+        "{}",
+        ui_visual::run(&workspace, visual, Some(&visual_target))?
+    );
     Ok(())
 }
 

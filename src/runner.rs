@@ -477,11 +477,14 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 success: None,
             })?;
 
+            let visual_target = workspace
+                .join("target")
+                .join("burncloud-harness-visual-build");
             let visual_result = task
                 .visual
                 .as_ref()
                 .context("UI migration tasks require a visual contract")
-                .and_then(|visual| crate::ui_visual::run(&workspace, visual, None));
+                .and_then(|visual| crate::ui_visual::run(&workspace, visual, Some(&visual_target)));
             let (success, stdout, stderr) = match visual_result {
                 Ok(output) => (true, output, String::new()),
                 Err(error) => (false, String::new(), format!("{error:#}")),
