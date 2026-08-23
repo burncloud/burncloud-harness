@@ -102,6 +102,13 @@ struct UiState {
     scroll: u16,
 }
 
+impl UiState {
+    fn escape_to_dashboard(&mut self) {
+        self.zoomed = false;
+        self.scroll = 0;
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -138,6 +145,7 @@ pub fn run(workspace: &Path, requested_run: Option<&str>) -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    drain_pending_input()?;
     let loop_result = run_loop(
         &mut terminal,
         &state_dir,
@@ -149,6 +157,13 @@ pub fn run(workspace: &Path, requested_run: Option<&str>) -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     loop_result
+}
+
+fn drain_pending_input() -> Result<()> {
+    while event::poll(Duration::from_millis(0))? {
+        let _ = event::read()?;
+    }
+    Ok(())
 }
 
 fn run_loop(
@@ -167,11 +182,7 @@ fn run_loop(
             if let TerminalEvent::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Esc if ui.zoomed => {
-                        ui.zoomed = false;
-                        ui.scroll = 0;
-                    }
-                    KeyCode::Esc => break,
+                    KeyCode::Esc => ui.escape_to_dashboard(),
                     KeyCode::Enter if !ui.zoomed => {
                         ui.zoomed = true;
                         ui.scroll = 0;
@@ -836,7 +847,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, replay: &RunReplay, live: bool, ui
             replay.state.risk_findings.len()
         )),
         Span::styled(
-            "←↑↓→ 选择 · Enter 放大 · r 刷新 · q/esc 退出",
+            "←↑↓→ 选择 · Enter 详情 · Esc 首页 · r 刷新 · q 退出",
             Style::default().fg(Color::White),
         ),
     ]);
@@ -1106,6 +1117,21 @@ mod tests {
         );
         assert_eq!(PanelId::RecentEvents.moved(KeyCode::Up), PanelId::Checks);
         assert_eq!(PanelId::Summary.moved(KeyCode::Left), PanelId::Summary);
+    }
+
+    #[test]
+    fn tui_starts_on_dashboard_and_esc_returns_to_dashboard() {
+        let mut ui = UiState::default();
+        assert!(!ui.zoomed);
+
+        ui.escape_to_dashboard();
+        assert!(!ui.zoomed);
+
+        ui.zoomed = true;
+        ui.scroll = 8;
+        ui.escape_to_dashboard();
+        assert!(!ui.zoomed);
+        assert_eq!(ui.scroll, 0);
     }
 
     #[test]
