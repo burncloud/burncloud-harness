@@ -32,7 +32,10 @@ pub fn list_runs(workspace: &Path) -> Result<()> {
     let state_dir = harness_state_dir(workspace)?;
     let runs = run_history::discover(&state_dir)?;
     if runs.is_empty() {
-        println!("目标工作区 {} 中没有 Harness 运行记录。", workspace.display());
+        println!(
+            "目标工作区 {} 中没有 Harness 运行记录。",
+            workspace.display()
+        );
         return Ok(());
     }
 
@@ -280,7 +283,9 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &RunState) {
     let mut lines = vec![Line::from(spans)];
     lines.push(Line::from(Span::styled(
         "本轮阶段耗时",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(timing_line(state, &PHASES[..3], now));
     lines.push(timing_line(state, &PHASES[3..], now));
@@ -300,7 +305,11 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &RunState) {
         for failure in state.failures.iter().rev().take(4).rev() {
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("#{} {}  ", failure.attempt, failure_class_zh(&failure.class)),
+                    format!(
+                        "#{} {}  ",
+                        failure.attempt,
+                        failure_class_zh(&failure.class)
+                    ),
                     Style::default().fg(Color::Yellow),
                 ),
                 Span::raw(compact(&failure.detail, 96)),
@@ -329,7 +338,9 @@ fn timing_line(state: &RunState, phases: &[&str], now: u64) -> Line<'static> {
         spans.push(Span::styled(
             format!("{} {}{}", stage_zh(phase), elapsed, running),
             if state.stage == *phase {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             },
@@ -563,7 +574,11 @@ fn event_name_zh(name: &str) -> &'static str {
 }
 
 fn event_summary_zh(name: &str, detail: &str) -> String {
-    format!("{} · {}", event_name_zh(name), event_detail_zh(name, detail))
+    format!(
+        "{} · {}",
+        event_name_zh(name),
+        event_detail_zh(name, detail)
+    )
 }
 
 fn event_detail_zh(name: &str, detail: &str) -> String {
