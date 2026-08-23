@@ -88,6 +88,7 @@ impl BurncloudRepo {
             .max_changed_files
             .map(|limit| format!("- Maximum changed files: {limit}"))
             .unwrap_or_else(|| "- Maximum changed files: not separately capped".to_owned());
+        let time_budget = task.agent.time_budget_prompt_text();
         let context_files = task.context_prompt_text();
         let feedback = previous_feedback
             .map(|value| format!("\nPrevious harness feedback:\n{value}\n"))
@@ -128,6 +129,17 @@ Explicit avoid scope:
 Change budget:
 {change_budget}
 
+Time budget for this attempt:
+{time_budget}
+
+Time-budget behavior:
+- Quality remains the priority. Use the budget to reduce repeated exploration, not to skip required reasoning or verification.
+- Before the soft convergence target, finish discovery and move toward the smallest coherent implementation.
+- At the soft target, stop broad exploration. Preserve correct work, close the smallest remaining gaps, and prepare a concise checkpoint/report.
+- The hard limit is enforced by burncloud-harness. Do not wait until the final minute to save or organize edits.
+- An idle warning means the harness has seen no agent output for the configured interval. Treat it as a signal to unblock or simplify the current approach.
+- If the hard limit ends the process, the existing worktree is preserved and the next Harness attempt will continue from the real diff. Do not intentionally restart from scratch on later attempts.
+
 Hard rules for this run:
 - Understand current behavior from real BurnCloud source before changing it.
 - Start discovery from the selected TASK_ROUTER rows when they are relevant, then confirm ownership from current source.
@@ -155,6 +167,7 @@ Hard rules for this run:
             allowed = allowed,
             avoid = avoid,
             change_budget = change_budget,
+            time_budget = time_budget,
             feedback = feedback,
         )
     }
