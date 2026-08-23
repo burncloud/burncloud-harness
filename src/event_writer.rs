@@ -11,7 +11,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::events::HarnessEvent;
+use crate::{agent_activity, events::HarnessEvent};
 
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
@@ -32,8 +32,11 @@ impl EventWriter {
     }
 
     pub fn append(&self, event: &HarnessEvent) -> Result<()> {
+        let Some(event) = curated_event(event) else {
+            return Ok(());
+        };
         let sequence = self.next_sequence();
-        let line = serde_json::to_string(&EventRecord::new(event, sequence))?;
+        let line = serde_json::to_string(&EventRecord::new(&event, sequence))?;
         self.append_line(&line)
     }
 
@@ -142,10 +145,13 @@ impl RunEventWriter {
     }
 
     pub fn append(&self, event: &HarnessEvent) -> Result<()> {
+        let Some(event) = curated_event(event) else {
+            return Ok(());
+        };
         // The run file and `latest` are mirrors of the same factual stream.
         // Generate sequence/timestamp once so both files contain byte-identical records.
         let sequence = self.primary.next_sequence();
-        let line = serde_json::to_string(&EventRecord::new(event, sequence))?;
+        let line = serde_json::to_string(&EventRecord::new(&event, sequence))?;
         self.primary.append_line(&line)?;
         self.latest.append_line(&line)?;
         Ok(())
@@ -153,6 +159,21 @@ impl RunEventWriter {
 
     pub fn path(&self) -> &Path {
         self.primary.path()
+    }
+}
+
+fn curated_event(event: &HarnessEvent) -> Option<HarnessEvent> {
+    match event {
+        HarnessEvent::AgentOutput {
+            attempt,
+            stream,
+            line,
+        } => agent_activity::curate(stream, line).map(|curated| HarnessEvent::AgentOutput {
+            attempt: *attempt,
+            stream: curated.stream,
+            line: curated.line,
+        }),
+        _ => Some(event.clone()),
     }
 }
 
@@ -251,7 +272,7 @@ mod tests {
         let live = RunEventWriter::open(&state, "run-1").unwrap();
         live.append(&HarnessEvent::AgentOutput {
             attempt: 1,
-            stream: "stdout".to_owned(),
+            stream: "stderr".to_owned(),
             line: "reading dashboard.rs".to_owned(),
         })
         .unwrap();
@@ -271,11 +292,45 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(records[0]["sequence"], 1);
         assert_eq!(records[1]["sequence"], 2);
+        assert_eq!(records[1]["event"]["stream"], "stdout");
         assert_eq!(records[2]["sequence"], 3);
         assert_eq!(
             primary,
             fs::read_to_string(state.join("runs/latest/events.jsonl")).unwrap()
         );
+
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn noisy_agent_output_does_not_consume_sequence() {
+        let state = temp_state();
+        let writer = RunEventWriter::create(&state, "run-1").unwrap();
+        writer
+            .append(&HarnessEvent::LoopStarted { attempt: 1 })
+            .unwrap();
+        writer
+            .append(&HarnessEvent::AgentOutput {
+                attempt: 1,
+                stream: "stderr".to_owned(),
+                line: r#"<div className=\"flex gap-2\">"#.to_owned(),
+            })
+            .unwrap();
+        writer
+            .append(&HarnessEvent::AgentHeartbeat {
+                attempt: 1,
+                elapsed_secs: 5,
+            })
+            .unwrap();
+
+        let primary = fs::read_to_string(writer.path()).unwrap();
+        let records = primary
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["sequence"], 1);
+        assert_eq!(records[1]["sequence"], 2);
 
         fs::remove_dir_all(state).unwrap();
     }
