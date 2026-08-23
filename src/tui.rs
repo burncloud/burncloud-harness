@@ -368,12 +368,13 @@ fn summary_lines(state: &RunState) -> Vec<Line<'static>> {
         .total_elapsed_ms(now)
         .map(format_duration)
         .unwrap_or_else(|| "--".into());
-    let stage_elapsed = current_stage_elapsed_ms(state, now)
-        .map(format_duration)
-        .unwrap_or_else(|| "--".into());
     let (passed, failed, running) = check_counts(state);
     let budget = match (state.agent_soft_limit_secs, state.agent_hard_limit_secs) {
-        (Some(soft), Some(hard)) => format!("soft {soft}s · hard {hard}s"),
+        (Some(soft), Some(hard)) => format!(
+            "soft {} · hard {}",
+            format_duration(soft.saturating_mul(1_000)),
+            format_duration(hard.saturating_mul(1_000))
+        ),
         _ => "未配置".to_owned(),
     };
     vec![
@@ -387,7 +388,6 @@ fn summary_lines(state: &RunState) -> Vec<Line<'static>> {
                 stage_zh(&state.stage)
             ),
         ),
-        kv("阶段耗时", &stage_elapsed),
         kv("总耗时", &total),
         kv("活动", &agent_activity_summary(state, now)),
         kv(
@@ -482,15 +482,9 @@ fn loop_lines(state: &RunState, compact_failure_detail: bool) -> Vec<Line<'stati
         };
         phase_spans.push(Span::styled(format!(" {} ", stage_zh(phase)), style));
     }
-    let elapsed = current_stage_elapsed_ms(state, now)
-        .map(format_duration)
-        .unwrap_or_else(|| "--".into());
     let mut lines = vec![
         Line::from(phase_spans),
-        kv(
-            "当前阶段",
-            &format!("{} · {elapsed}", stage_zh(&state.stage)),
-        ),
+        kv("当前阶段", stage_zh(&state.stage)),
         timing_line(state, &PHASES[..3], now),
         timing_line(state, &PHASES[3..], now),
     ];
@@ -536,17 +530,19 @@ fn timing_line(state: &RunState, phases: &[&str], now: u64) -> Line<'static> {
         if index > 0 {
             spans.push(Span::raw("    "));
         }
-        let elapsed = state
-            .stage_elapsed_ms(phase, state.attempt, now)
-            .map(format_duration)
-            .unwrap_or_else(|| "--".into());
+        let active = state.stage == *phase;
+        let text = if active {
+            format!("{} ↻", stage_zh(phase))
+        } else {
+            let elapsed = state
+                .stage_elapsed_ms(phase, state.attempt, now)
+                .map(format_duration)
+                .unwrap_or_else(|| "--".into());
+            format!("{} {elapsed}", stage_zh(phase))
+        };
         spans.push(Span::styled(
-            format!(
-                "{} {elapsed}{}",
-                stage_zh(phase),
-                if state.stage == *phase { " ↻" } else { "" }
-            ),
-            if state.stage == *phase {
+            text,
+            if active {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
@@ -893,11 +889,16 @@ fn agent_activity_summary(state: &RunState, now: u64) -> String {
             )
         })
         .unwrap_or_else(|| "尚无活动".into());
-    let heartbeat = state
-        .agent_heartbeat_elapsed_secs
-        .map(|seconds| format!(" · 心跳 {seconds}秒"))
-        .unwrap_or_default();
-    format!("{age}{heartbeat}")
+    let liveness = if state.agent_hard_timed_out {
+        " · 已超时"
+    } else if state.agent_idle_warning_active {
+        " · 空闲告警"
+    } else if state.agent_heartbeat_elapsed_secs.is_some() {
+        " · 在线"
+    } else {
+        ""
+    };
+    format!("{age}{liveness}")
 }
 
 fn check_counts(state: &RunState) -> (usize, usize, usize) {
@@ -1120,5 +1121,31 @@ mod tests {
         let rendered = format!("{:?}", lines);
         assert!(rendered.contains("计划修改 dashboard.rs"));
         assert!(rendered.contains("页面视觉对照"));
+    }
+
+    #[test]
+    fn activity_summary_uses_heartbeat_as_status_not_elapsed_time() {
+        let mut state = RunState::default();
+        state.agent_last_output_ms = Some(1_000);
+        state.agent_heartbeat_elapsed_secs = Some(125);
+        let summary = agent_activity_summary(&state, 2_000);
+        assert!(summary.contains("在线"));
+        assert!(!summary.contains("125秒"));
+    }
+
+    #[test]
+    fn active_phase_timing_does_not_repeat_live_elapsed_time() {
+        let mut state = RunState::default();
+        state.stage = "AGENT".into();
+        state.attempt = 1;
+        state.timings.push(crate::run_state::StageTiming {
+            attempt: 1,
+            stage: "AGENT".into(),
+            started_ms: 1_000,
+            duration_ms: None,
+        });
+        let rendered = format!("{:?}", timing_line(&state, &["AGENT"], 21_000));
+        assert!(rendered.contains("智能体 ↻"));
+        assert!(!rendered.contains("20.0秒"));
     }
 }
