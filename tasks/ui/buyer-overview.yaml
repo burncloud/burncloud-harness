@@ -123,5 +123,8 @@ agent:
     - exec
     - --full-auto
   append_prompt: true
+  soft_timeout_minutes: 15
+  hard_timeout_minutes: 25
+  idle_timeout_minutes: 5
 
 extra_checks: []
