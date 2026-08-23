@@ -63,18 +63,19 @@ pub fn plan_checks(
         .collect::<Vec<_>>();
     if !changed_rust_paths.is_empty() {
         let mut argv = vec![
-            "rustfmt".to_owned(),
-            "--edition".to_owned(),
-            "2021".to_owned(),
+            "git".to_owned(),
+            "diff".to_owned(),
             "--check".to_owned(),
+            "HEAD".to_owned(),
+            "--".to_owned(),
         ];
         argv.extend(changed_rust_paths);
         push_unique_argv(
             &mut checks,
             &mut seen,
-            "rustfmt",
+            "changed-rust-lines",
             argv,
-            "changed Rust files must satisfy rustfmt without inheriting unrelated baseline formatting failures",
+            "changed Rust lines must be free of whitespace errors without inheriting baseline formatting noise",
         );
     }
 
@@ -131,8 +132,8 @@ pub fn plan_checks(
         ),
         (
             "crates/client/",
-            "client-web-check",
-            "cargo check -p burncloud-client --no-default-features --features web",
+            "client-liveview-check",
+            "cargo check -p burncloud-client --no-default-features --features liveview",
         ),
     ];
 
@@ -590,36 +591,61 @@ mod tests {
             .iter()
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["rustfmt", "router-check", "billing-invariants"]);
+        assert_eq!(
+            names,
+            vec!["changed-rust-lines", "router-check", "billing-invariants"]
+        );
     }
 
     #[test]
-    fn rustfmt_check_is_scoped_to_changed_rust_files_without_a_shell() {
+    fn ui_change_uses_changed_lines_and_liveview_compile_checks() {
         let checks = plan_checks(
             &[
-                "crates/client/src/critical_pages/buyer_overview.rs".into(),
+                "crates/client/src/critical_pages/dashboard.rs".into(),
                 "crates/client/src/product_ui.css".into(),
             ],
             &[],
             &[],
         );
 
-        assert_eq!(checks[0].name, "rustfmt");
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].name, "changed-rust-lines");
         assert_eq!(
             checks[0].argv.as_ref().unwrap(),
             &vec![
-                "rustfmt".to_owned(),
-                "--edition".to_owned(),
-                "2021".to_owned(),
+                "git".to_owned(),
+                "diff".to_owned(),
                 "--check".to_owned(),
-                "crates/client/src/critical_pages/buyer_overview.rs".to_owned(),
+                "HEAD".to_owned(),
+                "--".to_owned(),
+                "crates/client/src/critical_pages/dashboard.rs".to_owned(),
             ]
         );
-        assert_eq!(checks[1].name, "client-web-check");
+        assert_eq!(checks[1].name, "client-liveview-check");
         assert_eq!(
             checks[1].command,
-            "cargo check -p burncloud-client --no-default-features --features web"
+            "cargo check -p burncloud-client --no-default-features --features liveview"
         );
+    }
+
+    #[test]
+    fn ui_change_without_visual_contract_remains_compile_checked() {
+        let checks = plan_checks(&["crates/client/src/components.rs".into()], &[], &[]);
+        let names = checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["changed-rust-lines", "client-liveview-check"]);
+    }
+
+    #[test]
+    fn client_data_change_gets_only_liveview_compile_check() {
+        let checks = plan_checks(&["crates/client/src/backend.rs".into()], &[], &[]);
+        let names = checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["changed-rust-lines", "client-liveview-check"]);
     }
 
     #[test]

@@ -20,6 +20,8 @@ mod run_state;
 mod runner;
 mod trajectory;
 mod tui;
+mod ui_daemon;
+mod ui_visual;
 
 use std::path::PathBuf;
 
@@ -52,6 +54,26 @@ enum Commands {
     Explain {
         #[arg(short, long)]
         task: PathBuf,
+    },
+    VerifyUi {
+        #[arg(short, long)]
+        task: PathBuf,
+    },
+    UiDaemon {
+        #[arg(long, default_value = "tasks/ui")]
+        tasks_dir: PathBuf,
+        #[arg(long, default_value = "../burncloud")]
+        workspace: PathBuf,
+        #[arg(long, default_value = "../burncloud-ui")]
+        source_workspace: PathBuf,
+        #[arg(long, default_value = "ce4fa9d2e79928a388bffa363a1eec77f6998900")]
+        source_revision: String,
+        #[arg(long)]
+        plan: bool,
+        #[arg(long)]
+        once: bool,
+        #[arg(long, default_value_t = 15)]
+        retry_delay_seconds: u64,
     },
     ExplainRun {
         #[arg(long)]
@@ -109,6 +131,24 @@ fn main() -> Result<()> {
             );
         }
         Commands::Explain { task } => explain_task(TaskSpec::load(task)?)?,
+        Commands::VerifyUi { task } => verify_ui(TaskSpec::load(task)?)?,
+        Commands::UiDaemon {
+            tasks_dir,
+            workspace,
+            source_workspace,
+            source_revision,
+            plan,
+            once,
+            retry_delay_seconds,
+        } => ui_daemon::run(ui_daemon::UiDaemonOptions {
+            tasks_dir,
+            workspace,
+            source_workspace,
+            source_revision,
+            plan_only: plan,
+            once,
+            retry_delay: std::time::Duration::from_secs(retry_delay_seconds),
+        })?,
         Commands::ExplainRun { run, workspace } => explain_run(&workspace, &run)?,
         Commands::Analyze { workspace, limit } => analyze_workspace(workspace, limit)?,
         Commands::Recommend {
@@ -135,6 +175,16 @@ fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn verify_ui(task: TaskSpec) -> Result<()> {
+    let workspace = PathBuf::from(task.workspace.as_str()).canonicalize()?;
+    let visual = task
+        .visual
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("task '{}' has no visual contract", task.name))?;
+    println!("{}", ui_visual::run(&workspace, visual, None)?);
     Ok(())
 }
 

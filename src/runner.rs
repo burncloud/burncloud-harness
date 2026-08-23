@@ -26,24 +26,34 @@ pub struct RunSummary {
 
 pub fn run(task: TaskSpec) -> Result<RunSummary> {
     let mut observer = NoopObserver;
-    run_with_observer_mode(task, &mut observer, false, true)
+    run_with_observer_mode(task, &mut observer, false, true, false)
+}
+
+pub fn run_ui_migration(task: TaskSpec) -> Result<RunSummary> {
+    let mut observer = NoopObserver;
+    run_with_observer_mode(task, &mut observer, false, true, true)
 }
 
 pub fn resume(task: TaskSpec) -> Result<RunSummary> {
     let mut observer = NoopObserver;
-    run_with_observer_mode(task, &mut observer, true, true)
+    run_with_observer_mode(task, &mut observer, true, true, false)
+}
+
+pub fn resume_ui_migration(task: TaskSpec) -> Result<RunSummary> {
+    let mut observer = NoopObserver;
+    run_with_observer_mode(task, &mut observer, true, true, true)
 }
 
 pub fn verify_existing(task: TaskSpec) -> Result<RunSummary> {
     let mut observer = NoopObserver;
-    run_with_observer_mode(task, &mut observer, true, false)
+    run_with_observer_mode(task, &mut observer, true, false, false)
 }
 
 pub fn run_with_observer<O: RunObserver + ?Sized>(
     task: TaskSpec,
     observer: &mut O,
 ) -> Result<RunSummary> {
-    run_with_observer_mode(task, observer, false, true)
+    run_with_observer_mode(task, observer, false, true, false)
 }
 
 fn run_with_observer_mode<O: RunObserver + ?Sized>(
@@ -51,6 +61,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
     observer: &mut O,
     resume_existing_changes: bool,
     execute_agent: bool,
+    strict_visual: bool,
 ) -> Result<RunSummary> {
     let workspace = PathBuf::from(task.workspace.as_str())
         .canonicalize()
@@ -450,6 +461,55 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             }
         }
 
+        if strict_visual {
+            const CHECK_NAME: &str = "ui-pixel-parity";
+            const CHECK_COMMAND: &str = "builtin:strict-ui-pixel-parity";
+            const CHECK_REASON: &str =
+                "UI migration daemon requires deterministic reference pixel parity";
+            trajectory.record(Event::CheckStarted {
+                attempt,
+                name: CHECK_NAME,
+            })?;
+            observer.on_event(RunEvent::Check {
+                attempt,
+                name: CHECK_NAME.to_owned(),
+                reason: CHECK_REASON.to_owned(),
+                success: None,
+            })?;
+
+            let visual_result = task
+                .visual
+                .as_ref()
+                .context("UI migration tasks require a visual contract")
+                .and_then(|visual| crate::ui_visual::run(&workspace, visual, None));
+            let (success, stdout, stderr) = match visual_result {
+                Ok(output) => (true, output, String::new()),
+                Err(error) => (false, String::new(), format!("{error:#}")),
+            };
+            trajectory.record(Event::CheckFinished {
+                attempt,
+                name: CHECK_NAME,
+                command: CHECK_COMMAND,
+                reason: CHECK_REASON,
+                success,
+                exit_code: Some(if success { 0 } else { 1 }),
+                stdout: &stdout,
+                stderr: &stderr,
+            })?;
+            observer.on_event(RunEvent::Check {
+                attempt,
+                name: CHECK_NAME.to_owned(),
+                reason: CHECK_REASON.to_owned(),
+                success: Some(success),
+            })?;
+            if !success {
+                failed.push(format!(
+                    "{CHECK_NAME} (`{CHECK_COMMAND}`): {}",
+                    compact_failure(&stderr, &stdout)
+                ));
+            }
+        }
+
         if failed.is_empty() {
             trajectory.record(Event::RunFinished {
                 success: true,
@@ -792,17 +852,22 @@ fn run_agent(
                     hard_limit_secs,
                     "agent reached hard time budget; preserving worktree and ending this attempt"
                 );
-                child
-                    .kill()
-                    .context("failed to terminate agent after hard time budget")?;
+                terminate_agent_process_tree(&mut child)?;
                 hard_timed_out = true;
                 break child.wait()?;
             }
         }
     };
 
-    let _ = stdout_thread.join();
-    let _ = stderr_thread.join();
+    if hard_timed_out {
+        // Descendants can inherit these pipes. Do not let an already-enforced hard timeout
+        // hang forever while waiting for an unrelated inherited handle to close.
+        drop(stdout_thread);
+        drop(stderr_thread);
+    } else {
+        let _ = stdout_thread.join();
+        let _ = stderr_thread.join();
+    }
     while let Ok(line) = receiver.try_recv() {
         record_agent_line(
             &events,
@@ -820,6 +885,23 @@ fn run_agent(
         stdout: stdout_buffer,
         stderr: stderr_buffer,
     })
+}
+
+fn terminate_agent_process_tree(child: &mut std::process::Child) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .status()
+            .context("failed to invoke taskkill for timed-out agent")?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    child
+        .kill()
+        .context("failed to terminate agent after hard time budget")
 }
 
 fn agent_failure_feedback(task: &TaskSpec, result: &AgentResult) -> String {

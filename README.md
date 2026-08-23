@@ -211,12 +211,16 @@ Natural-language feedback remains available to the next agent attempt, but Harne
 Verification is driven by changed paths plus active invariant IDs. Examples include:
 
 - Rust changes -> `git diff --check HEAD -- <changed-rust-files>` (baseline-aware changed-line whitespace gate)
-- client impact -> `cargo check -p burncloud-client`
+- client impact -> `cargo check -p burncloud-client --no-default-features --features liveview`
 - router impact -> `cargo check -p burncloud-router`
 - runtime impact -> `cargo check -p burncloud-server`
 - auth/internal impact -> `cargo test -p burncloud-server --test security_invariants`
 - billing impact -> `cargo test -p burncloud-router --test billing_invariants --test quota_tests`
 - workspace dependency impact -> `cargo check --workspace`
+
+Optional visual diagnostics are implemented in Rust in `src/ui_visual.rs`. The explicit `verify-ui` command starts BurnCloud, captures desktop/mobile evidence, performs configured PNG pixel comparison, and writes local/reference/diff images plus `report.json` under `target/burncloud-harness/visual/<route>/`. Ordinary Harness runs do not schedule this diagnostic automatically and a missing `visual:` contract does not block verification. Run it manually with `cargo run -- verify-ui --task tasks/ui/<task>.yaml` when evidence is useful.
+
+The BurnCloud-specific migration campaign is declared in `tasks/ui/campaign.yaml`. `cargo run -- ui-daemon --plan` validates and prints all 28 source page units. `cargo run --release -- ui-daemon` continuously runs each unit with strict pixel parity, resumes interrupted in-scope work, commits only the verified paths after a pass, and advances until the campaign is complete. Durable state lives outside the worktree under `.git/burncloud-harness/ui-daemon/state.json` in the target repository.
 
 Task-specific checks may be added, but built-in BurnCloud checks cannot be disabled by the task file.
 

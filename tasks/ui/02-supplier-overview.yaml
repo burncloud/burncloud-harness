@@ -19,8 +19,9 @@ goal: |
     contract/current runtime truth wins. Record the parity gap instead of copying the conflict.
 
   IMPLEMENTATION REQUIREMENTS:
+  - When `BURN_CLOUD_UI_VISUAL_FIXTURE=aether-ce4fa9` is set, render the pinned source page's deterministic demo values and expose `data-visual-fixture="aether-ce4fa9"`; this capture-only state must never affect normal production runtime data.
   - First inspect the current Rust/Dioxus route, page implementation, shared components,
-    data/API wiring, and executable UI gates before editing.
+    and data/API wiring before editing.
   - Reproduce the source page's layout, hierarchy, controls, interaction shape, density,
     typography, spacing, states, and visual treatment as closely as practical in Dioxus.
   - Translate React/TypeScript/Tailwind patterns into idiomatic Rust/Dioxus and the existing
@@ -92,5 +93,15 @@ agent:
     - exec
     - --full-auto
   append_prompt: true
+
+visual:
+  route: /supplier/overview
+  reference_url: https://aether-router.ai.studio/supplier/overview
+  pixel_match:
+    channel_tolerance: 0
+    max_changed_pixel_ratio: 0.0
+    max_mean_channel_delta: 0.0
+  required_selectors:
+    - '[data-visual-fixture="aether-ce4fa9"]'
 
 extra_checks: []

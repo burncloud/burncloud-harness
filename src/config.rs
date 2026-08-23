@@ -23,6 +23,8 @@ pub struct TaskSpec {
     pub resolved_context_files: Vec<ResolvedContextFile>,
     #[serde(default)]
     pub extra_checks: Vec<CheckSpec>,
+    #[serde(default)]
+    pub visual: Option<UiVisualSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +123,55 @@ pub struct CheckSpec {
     pub command: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiVisualSpec {
+    pub route: String,
+    #[serde(default)]
+    pub reference_url: Option<String>,
+    #[serde(default)]
+    pub required_selectors: Vec<String>,
+    #[serde(default)]
+    pub metric_labels: Vec<String>,
+    #[serde(default)]
+    pub section_titles: Vec<String>,
+    #[serde(default)]
+    pub clipping_selectors: Vec<String>,
+    #[serde(default)]
+    pub locale_selector: Option<String>,
+    #[serde(default)]
+    pub locale_title_selector: Option<String>,
+    #[serde(default)]
+    pub locale_titles: Vec<UiVisualLocale>,
+    #[serde(default)]
+    pub mobile_menu: Option<UiVisualMobileMenu>,
+    #[serde(default)]
+    pub pixel_match: Option<UiPixelMatchSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiPixelMatchSpec {
+    #[serde(default)]
+    pub channel_tolerance: u8,
+    #[serde(default)]
+    pub max_changed_pixel_ratio: f64,
+    #[serde(default)]
+    pub max_mean_channel_delta: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiVisualLocale {
+    pub value: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiVisualMobileMenu {
+    pub trigger_selector: String,
+    pub panel_selector: String,
+    #[serde(default)]
+    pub expected_links: Vec<String>,
+}
+
 impl TaskSpec {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -186,6 +237,57 @@ impl TaskSpec {
         for check in &self.extra_checks {
             if check.name.trim().is_empty() || check.command.trim().is_empty() {
                 bail!("every extra check requires a non-empty name and command");
+            }
+        }
+        if let Some(visual) = &self.visual {
+            if visual.route.trim().is_empty() || !visual.route.starts_with('/') {
+                bail!("visual.route must be a non-empty absolute application route");
+            }
+            if visual
+                .reference_url
+                .as_ref()
+                .is_some_and(|url| url.trim().is_empty())
+            {
+                bail!("visual.reference_url must not be empty when declared");
+            }
+            if visual
+                .required_selectors
+                .iter()
+                .chain(&visual.clipping_selectors)
+                .any(|selector| selector.trim().is_empty())
+            {
+                bail!("visual selectors must not be empty");
+            }
+            if !visual.locale_titles.is_empty()
+                && (visual.locale_selector.is_none() || visual.locale_title_selector.is_none())
+            {
+                bail!("visual locale and title selectors are required when locale_titles are declared");
+            }
+            if visual
+                .locale_titles
+                .iter()
+                .any(|locale| locale.value.trim().is_empty() || locale.title.trim().is_empty())
+            {
+                bail!("visual locale values and titles must not be empty");
+            }
+            if let Some(pixel) = &visual.pixel_match {
+                if !pixel.max_changed_pixel_ratio.is_finite()
+                    || !(0.0..=1.0).contains(&pixel.max_changed_pixel_ratio)
+                {
+                    bail!("visual.pixel_match.max_changed_pixel_ratio must be between 0 and 1");
+                }
+                if !pixel.max_mean_channel_delta.is_finite()
+                    || pixel.max_mean_channel_delta < 0.0
+                    || pixel.max_mean_channel_delta > 255.0
+                {
+                    bail!("visual.pixel_match.max_mean_channel_delta must be between 0 and 255");
+                }
+            }
+            if let Some(menu) = &visual.mobile_menu {
+                if menu.trigger_selector.trim().is_empty() || menu.panel_selector.trim().is_empty()
+                {
+                    bail!("visual mobile-menu selectors must not be empty");
+                }
             }
         }
         Ok(())
@@ -329,6 +431,7 @@ mod tests {
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
+            visual: None,
         };
 
         assert!(task.validate().is_err());
@@ -351,6 +454,7 @@ mod tests {
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
+            visual: None,
         };
 
         assert!(task.validate().is_err());
@@ -373,6 +477,7 @@ mod tests {
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
+            visual: None,
         };
 
         task.agent.soft_timeout_minutes = Some(25);
@@ -412,6 +517,7 @@ mod tests {
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
+            visual: None,
         };
 
         task.normalize_agent_compatibility();
@@ -509,6 +615,7 @@ context_files:
             context_files: vec![],
             resolved_context_files: vec![],
             extra_checks: vec![],
+            visual: None,
         };
 
         task.normalize_agent_compatibility();

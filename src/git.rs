@@ -82,6 +82,52 @@ impl GitRepo {
         Ok(diff)
     }
 
+    pub fn commit_paths(&self, paths: &[String], message: &str) -> Result<String> {
+        if paths.is_empty() {
+            bail!("refusing to create an empty Harness checkpoint commit");
+        }
+        let mut add = Command::new("git");
+        add.arg("add").arg("--").args(paths).current_dir(&self.root);
+        let output = add.output().with_context(|| {
+            format!(
+                "failed to stage Harness checkpoint in {}",
+                self.root.display()
+            )
+        })?;
+        if !output.status.success() {
+            bail!(
+                "failed to stage Harness checkpoint: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        let output = Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(&self.root)
+            .output()
+            .with_context(|| {
+                format!(
+                    "failed to commit Harness checkpoint in {}",
+                    self.root.display()
+                )
+            })?;
+        if !output.status.success() {
+            bail!(
+                "failed to commit Harness checkpoint: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        self.head_sha()
+    }
+
+    pub fn branch_name(&self) -> Result<String> {
+        let output = self.git(["branch", "--show-current"])?;
+        if !output.status.success() || output.stdout.trim().is_empty() {
+            bail!("UI migration daemon requires a named Git branch");
+        }
+        Ok(output.stdout.trim().to_owned())
+    }
+
     pub fn diff_fingerprint(&self) -> Result<String> {
         let diff = self.diff()?;
         let mut hash = 0xcbf29ce484222325u64;

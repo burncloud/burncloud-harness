@@ -36,9 +36,10 @@ goal: |
   - Needs Attention is conditional and must not become a permanent replacement for the source page.
 
   IMPLEMENTATION REQUIREMENTS:
+  - When `BURN_CLOUD_UI_VISUAL_FIXTURE=aether-ce4fa9` is set, render the pinned source page's deterministic demo values and expose `data-visual-fixture="aether-ce4fa9"`; this capture-only state must never affect normal production runtime data.
   - Read docs/ui/source-migration-fidelity.md before editing and treat it as a completion rule.
   - First inspect the current Rust/Dioxus route, page implementation, shared layout/components,
-    existing data/API wiring, and executable UI gates.
+    and existing data/API wiring.
   - Reproduce the source page's layout, hierarchy, controls, interaction shape, density,
     typography, spacing, states, and visual treatment closely enough that the source and Rust
     page are immediately recognizable as the same product/page.
@@ -50,7 +51,6 @@ goal: |
     server, service, database, dependencies, or unrelated functional pages just to obtain prettier
     demo values.
   - Do not migrate later Buyer/Supplier/Admin pages in this task.
-  - Do not modify existing UI gate scripts to make this task pass.
   - Respect scope.max_changed_files. If the strict page port genuinely needs more files, report
     NEED_SCOPE_EXPANSION instead of widening the diff.
   - End with a parity report that separately lists:
@@ -126,5 +126,60 @@ agent:
   soft_timeout_minutes: 15
   hard_timeout_minutes: 25
   idle_timeout_minutes: 5
+
+visual:
+  route: /buyer/overview
+  reference_url: https://aether-router.ai.studio/buyer/overview
+  pixel_match:
+    channel_tolerance: 0
+    max_changed_pixel_ratio: 0.0
+    max_mean_channel_delta: 0.0
+  required_selectors:
+    - '[data-visual-fixture="aether-ce4fa9"]'
+    - .buyer-shell
+    - .buyer-sidebar
+    - .buyer-topbar
+    - .buyer-overview-page
+    - .buyer-page-header
+    - .buyer-conclusion
+    - .buyer-metrics
+  metric_labels:
+    - TODAY SPEND
+    - PREPAID BALANCE
+    - API AVAILABILITY
+    - TOKENS TODAY
+  section_titles:
+    - Models in Use
+    - Recent Activity
+  clipping_selectors:
+    - .buyer-page-heading
+    - .buyer-page-heading h1
+    - .buyer-page-heading p
+    - .buyer-header-actions
+    - .buyer-conclusion
+    - .buyer-metric
+    - .buyer-section-card
+  locale_selector: '.buyer-language select[aria-label="Language"]'
+  locale_title_selector: .buyer-page-heading h1
+  locale_titles:
+    - value: en
+      title: Developer Overview
+    - value: zh
+      title: 开发者工作台概览
+    - value: zh-TW
+      title: 開發者工作台總覽
+    - value: ja
+      title: 開発者ダッシュボード概要
+  mobile_menu:
+    trigger_selector: .buyer-mobile-menu
+    panel_selector: .buyer-mobile-panel
+    expected_links:
+      - Overview
+      - Playground
+      - Model Marketplace
+      - API Keys
+      - Usage Analytics
+      - Billing & Escrow
+      - Request Logs
 
 extra_checks: []

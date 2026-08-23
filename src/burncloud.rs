@@ -178,7 +178,9 @@ Hard rules for this run:
 - Do not weaken, delete, skip, or ignore tests to make the task green.
 - Do not commit, push, merge, reset, clean, or rewrite git history.
 - Do not create root-level scratch files or task-contract artifacts. Keep reasoning/reporting in your response.
-- Run the closest useful verification you can, but burncloud-harness will independently run mandatory checks after you finish.
+- Run the closest useful verification you can, but burncloud-harness will independently run mandatory checks after you finish. Do not override `CARGO_TARGET_DIR`, create a fresh target cache, or launch duplicate Cargo checks. For client UI work, run at most one targeted check; then return control so the Harness can run its cached LiveView and visual gates.
+- Do not leave `cargo run -- server` or another persistent process running. The Harness Buyer visual gate owns server startup, stderr capture, and cleanup. Use its failure evidence to debug runtime faults instead of starting an unmanaged server.
+- Do not run recursive `cargo fmt` in this baseline. For allowed changed Rust files, use `rustfmt --edition 2021 --config skip_children=true <explicit allowed files>` or rely on the Harness changed-line gate. Immediately inspect `git status --short` after any formatter and remove formatter-only changes outside the allowlist before continuing.
 - End with a concise REPORT that lists: verified execution path, files changed, verification actually run, relevant invariants, remaining risk, and unrelated changes.
 {feedback}"#,
             name = task.name,
@@ -237,7 +239,7 @@ fn ui_context_prompt_text(task: &TaskSpec) -> String {
     };
 
     format!(
-        "PRIMARY — read before the first UI edit:\n{primary}\n\nSUPPORTING — consult only when an active parity gap requires it; do not serially reread all of these on every attempt:\n{supporting}"
+        "PATH RULE — every entry is `declared -> canonical absolute`. Open the canonical absolute path on the right exactly as printed. Never resolve the declared path on the left against the BurnCloud workspace. If one canonical path fails, report that exact path once and continue without retrying alternate relative forms.\n\nPRIMARY — read before the first UI edit:\n{primary}\n\nSUPPORTING — consult only when an active parity gap requires it; do not serially reread all of these on every attempt:\n{supporting}"
     )
 }
 

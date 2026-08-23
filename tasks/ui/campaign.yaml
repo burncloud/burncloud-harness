@@ -1,0 +1,170 @@
+schema: 1
+source_revision: ce4fa9d2e79928a388bffa363a1eec77f6998900
+units:
+  - order: 1
+    task_file: buyer-overview.yaml
+  - order: 2
+    task_file: 02-supplier-overview.yaml
+  - order: 3
+    task_file: 03-admin-overview.yaml
+  - order: 4
+    task_file: 04-buyer-marketplace.yaml
+  - order: 5
+    task_file: 05-supplier-resources.yaml
+  - order: 6
+    task_file: 06-admin-capacity.yaml
+
+  - order: 7
+    name: ui-migrate-07-buyer-playground-v1
+    title: Buyer Playground
+    route: /buyer/playground
+    aliases: [/buyer/playground, /playground]
+    source_page: src/pages/buyer/BuyerPlayground.tsx
+    contract: docs/ui/page-contracts/buyer-playground.md
+  - order: 8
+    name: ui-migrate-08-buyer-api-keys-v1
+    title: Buyer API Keys
+    route: /buyer/api-keys
+    aliases: [/buyer/api-keys, /keys]
+    source_page: src/pages/buyer/BuyerAPIKeys.tsx
+    contract: docs/ui/page-contracts/buyer-api-keys.md
+  - order: 9
+    name: ui-migrate-09-buyer-usage-v1
+    title: Buyer Usage
+    route: /buyer/usage
+    aliases: [/buyer/usage, /usage]
+    source_page: src/pages/buyer/BuyerUsage.tsx
+    contract: docs/ui/page-contracts/buyer-usage.md
+  - order: 10
+    name: ui-migrate-10-buyer-billing-v1
+    title: Buyer Billing
+    route: /buyer/billing
+    aliases: [/buyer/billing, /billing]
+    source_page: src/pages/buyer/BuyerBilling.tsx
+    contract: docs/ui/page-contracts/buyer-billing.md
+  - order: 11
+    name: ui-migrate-11-buyer-logs-v1
+    title: Buyer Logs
+    route: /buyer/logs
+    aliases: [/buyer/logs, /logs]
+    source_page: src/pages/buyer/BuyerLogs.tsx
+    contract: docs/ui/page-contracts/buyer-logs.md
+
+  - order: 12
+    name: ui-migrate-12-supplier-deployments-v1
+    title: Supplier Deployments
+    route: /supplier/deployments
+    aliases: [/supplier/deployments]
+    source_page: src/pages/supplier/SupplierDeployments.tsx
+    contract: docs/ui/page-contracts/supplier-deployments.md
+  - order: 13
+    name: ui-migrate-13-supplier-earnings-v1
+    title: Supplier Earnings
+    route: /supplier/earnings
+    aliases: [/supplier/earnings]
+    source_page: src/pages/supplier/SupplierEarnings.tsx
+    contract: docs/ui/page-contracts/supplier-earnings.md
+  - order: 14
+    name: ui-migrate-14-supplier-settlements-v1
+    title: Supplier Settlements
+    route: /supplier/settlements
+    aliases: [/supplier/settlements]
+    source_page: src/pages/supplier/SupplierSettlements.tsx
+    contract: docs/ui/page-contracts/supplier-settlements.md
+  - order: 15
+    name: ui-migrate-15-supplier-reliability-v1
+    title: Supplier Reliability
+    route: /supplier/reliability
+    aliases: [/supplier/reliability]
+    source_page: src/pages/supplier/SupplierReliability.tsx
+    contract: docs/ui/page-contracts/supplier-reliability.md
+  - order: 16
+    name: ui-migrate-16-supplier-settings-v1
+    title: Supplier Settings
+    route: /supplier/settings
+    aliases: [/supplier/settings]
+    source_page: src/pages/supplier/SupplierSettings.tsx
+    contract: docs/ui/page-contracts/supplier-settings.md
+
+  - order: 17
+    name: ui-migrate-17-admin-supply-v1
+    title: Admin Supply
+    route: /admin/supply
+    aliases: [/admin/supply]
+    source_page: src/pages/admin/AdminSupply.tsx
+    contract: docs/ui/page-contracts/admin-supply.md
+  - order: 18
+    name: ui-migrate-18-admin-demand-v1
+    title: Admin Demand
+    route: /admin/demand
+    aliases: [/admin/demand]
+    source_page: src/pages/admin/AdminDemand.tsx
+    contract: docs/ui/page-contracts/admin-demand.md
+  - order: 19
+    name: ui-migrate-19-admin-models-v1
+    title: Admin Models
+    route: /admin/models
+    aliases: [/admin/models]
+    source_page: src/pages/admin/AdminModels.tsx
+    contract: docs/ui/page-contracts/admin-models.md
+  - order: 20
+    name: ui-migrate-20-admin-revenue-v1
+    title: Admin Revenue
+    route: /admin/revenue
+    aliases: [/admin/revenue]
+    source_page: src/pages/admin/AdminRevenue.tsx
+    contract: docs/ui/page-contracts/admin-revenue.md
+  - order: 21
+    name: ui-migrate-21-admin-settlements-v1
+    title: Admin Settlements
+    route: /admin/settlements
+    aliases: [/admin/settlements]
+    source_page: src/pages/admin/AdminSettlements.tsx
+    contract: docs/ui/page-contracts/admin-settlements.md
+  - order: 22
+    name: ui-migrate-22-admin-suppliers-v1
+    title: Admin Suppliers
+    route: /admin/suppliers
+    aliases: [/admin/suppliers]
+    source_page: src/pages/admin/AdminSuppliers.tsx
+    contract: docs/ui/page-contracts/admin-suppliers.md
+  - order: 23
+    name: ui-migrate-23-admin-customers-v1
+    title: Admin Customers
+    route: /admin/customers
+    aliases: [/admin/customers]
+    source_page: src/pages/admin/AdminCustomers.tsx
+    contract: docs/ui/page-contracts/admin-customers.md
+  - order: 24
+    name: ui-migrate-24-admin-operations-v1
+    title: Admin Operations
+    route: /admin/operations
+    aliases: [/admin/operations]
+    source_page: src/pages/admin/AdminOperations.tsx
+    contract: docs/ui/page-contracts/admin-operations.md
+  - order: 25
+    name: ui-migrate-25-admin-settings-v1
+    title: Admin Settings
+    route: /admin/settings
+    aliases: [/admin/settings]
+    source_page: src/pages/admin/AdminSettings.tsx
+    contract: docs/ui/page-contracts/admin-settings.md
+
+  - order: 26
+    name: ui-migrate-26-home-v1
+    title: Home
+    route: /home
+    aliases: [/home, /landing]
+    source_page: src/pages/Home.tsx
+  - order: 27
+    name: ui-migrate-27-login-v1
+    title: Login
+    route: /login
+    aliases: [/login]
+    source_page: src/pages/Login.tsx
+  - order: 28
+    name: ui-migrate-28-register-v1
+    title: Register
+    route: /register
+    aliases: [/register]
+    source_page: src/pages/Register.tsx

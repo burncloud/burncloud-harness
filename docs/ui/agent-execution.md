@@ -87,7 +87,7 @@ What should stay hidden?
 
 - Compile/type/build
 - Functional behavior
-- Existing executable UI conventions
+- Optional UI diagnostics
 - Page Contract / Product UX
 - Visual QA
 - Accessibility
