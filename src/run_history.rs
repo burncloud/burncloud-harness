@@ -7,7 +7,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use crate::event_writer::EVENT_SCHEMA_VERSION;
+use crate::{event_writer::EVENT_SCHEMA_VERSION, run_state::RunState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunSource {
@@ -32,18 +32,9 @@ pub struct RunArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplayEvent {
-    pub name: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunReplay {
-    pub run_id: String,
-    pub task: String,
-    pub status: String,
     pub source: RunSource,
-    pub events: Vec<ReplayEvent>,
+    pub state: RunState,
 }
 
 pub fn discover(state_dir: &Path) -> Result<Vec<RunArtifact>> {
@@ -118,11 +109,9 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
         .with_context(|| format!("failed to read run {}", artifact.path.display()))?;
     let complete_file = content.ends_with('\n');
     let line_count = content.lines().count();
-    let mut task = "unknown".to_owned();
-    let mut stage = "TASK".to_owned();
-    let mut final_status = None;
-    let mut events = Vec::new();
     let mut previous_sequence = 0;
+    let mut state = RunState::default();
+    state.run_id = artifact.run_id.clone();
 
     for (index, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
@@ -150,35 +139,12 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
             RunSource::EventStream => value.get("event").unwrap_or(&value),
             RunSource::Trajectory => &value,
         };
-        let name = payload
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-
-        if let Some(value) = payload.get("task").and_then(Value::as_str) {
-            task = value.to_owned();
-        }
-
-        if matches!(name, "task_finished" | "run_finished") {
-            if let Some(success) = payload.get("success").and_then(Value::as_bool) {
-                final_status = Some(if success { "PASSED" } else { "FAILED" }.to_owned());
-            }
-        } else {
-            stage = stage_for(name).to_owned();
-        }
-
-        events.push(ReplayEvent {
-            name: name.to_owned(),
-            detail: detail_for(payload, name),
-        });
+        state.apply(payload);
     }
 
     Ok(RunReplay {
-        run_id: artifact.run_id.clone(),
-        task,
-        status: final_status.unwrap_or(stage),
         source: artifact.source,
-        events,
+        state,
     })
 }
 
@@ -209,73 +175,6 @@ fn validate_event_record(
     }
 
     Ok(())
-}
-
-fn stage_for(event: &str) -> &'static str {
-    match event {
-        "task_started" | "contract_loaded" | "run_started" => "TASK",
-        "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
-        "loop_started" | "agent_started" | "agent_finished" | "attempt_started"
-        | "attempt_failed" | "retry_requested" | "failure_recorded" => "AGENT",
-        "diff_detected"
-        | "git_head_checked"
-        | "scope_evaluated"
-        | "invariant_impact_assessed"
-        | "invariant_expanded" => "SCOPE",
-        "risk_assessed" | "risk_detected" => "RISK",
-        "verification_started" | "verification_finished" | "check_finished" => "VERIFY",
-        _ => "TASK",
-    }
-}
-
-fn detail_for(payload: &Value, name: &str) -> String {
-    if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
-        return reason.to_owned();
-    }
-    if let Some(detail) = payload.get("detail").and_then(Value::as_str) {
-        if let Some(class) = payload.get("class").and_then(Value::as_str) {
-            return format!("{class}: {detail}");
-        }
-        return detail.to_owned();
-    }
-    if let Some(values) = string_array(payload, "violations") {
-        return if values.is_empty() {
-            "scope accepted".to_owned()
-        } else {
-            format!("scope violations: {}", values.join(", "))
-        };
-    }
-    if let Some(values) = string_array(payload, "findings") {
-        return if values.is_empty() {
-            "no risk findings".to_owned()
-        } else {
-            values.join("; ")
-        };
-    }
-    if let Some(values) = string_array(payload, "invariants") {
-        if !values.is_empty() {
-            return format!("new invariants: {}", values.join(", "));
-        }
-    }
-    if let Some(check) = payload.get("check").and_then(Value::as_str) {
-        return check.to_owned();
-    }
-    if let Some(check) = payload.get("name").and_then(Value::as_str) {
-        return check.to_owned();
-    }
-    if let Some(attempt) = payload.get("attempt").and_then(Value::as_u64) {
-        return format!("attempt {attempt}");
-    }
-    name.replace('_', " ")
-}
-
-fn string_array(value: &Value, key: &str) -> Option<Vec<String>> {
-    value
-        .get(key)?
-        .as_array()?
-        .iter()
-        .map(|item| item.as_str().map(str::to_owned))
-        .collect()
 }
 
 #[cfg(test)]
@@ -316,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_nested_event_stream_replay() {
+    fn event_stream_uses_shared_reducer() {
         let state = temp_state("events");
         let path = state.join("events.jsonl");
         fs::create_dir_all(&state).unwrap();
@@ -324,7 +223,7 @@ mod tests {
             &path,
             concat!(
                 "{\"schema_version\":1,\"sequence\":1,\"timestamp_ms\":1,\"event\":{\"type\":\"task_started\",\"run_id\":\"200\",\"task\":\"buyer-overview\",\"area\":\"ui\"}}\n",
-                "{\"schema_version\":1,\"sequence\":2,\"timestamp_ms\":2,\"event\":{\"type\":\"retry_requested\",\"attempt\":1,\"reason\":\"scope expanded\"}}\n",
+                "{\"schema_version\":1,\"sequence\":2,\"timestamp_ms\":2,\"event\":{\"type\":\"risk_detected\",\"attempt\":1,\"findings\":[\"review\"]}}\n",
                 "{\"schema_version\":1,\"sequence\":3,\"timestamp_ms\":3,\"event\":{\"type\":\"task_finished\",\"success\":true,\"attempts\":1}}\n"
             ),
         )
@@ -336,9 +235,10 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(replay.task, "buyer-overview");
-        assert_eq!(replay.status, "PASSED");
-        assert_eq!(replay.events[1].detail, "scope expanded");
+        assert_eq!(replay.state.task, "buyer-overview");
+        assert_eq!(replay.state.status, "PASSED");
+        assert_eq!(replay.state.risk_findings, vec!["review"]);
+        assert_eq!(replay.state.timeline.len(), 3);
         fs::remove_dir_all(state).unwrap();
     }
 
@@ -362,9 +262,8 @@ mod tests {
             source: RunSource::EventStream,
         })
         .unwrap();
-        assert_eq!(replay.task, "live-task");
-        assert_eq!(replay.events.len(), 1);
-        assert_eq!(replay.events[0].name, "task_started");
+        assert_eq!(replay.state.task, "live-task");
+        assert_eq!(replay.state.timeline.len(), 1);
         fs::remove_dir_all(state).unwrap();
     }
 
@@ -392,14 +291,14 @@ mod tests {
     }
 
     #[test]
-    fn loads_trajectory_as_legacy_replay() {
+    fn legacy_trajectory_uses_same_reducer() {
         let state = temp_state("trajectory");
         let path = state.join("100.jsonl");
         fs::create_dir_all(&state).unwrap();
         fs::write(
             &path,
             concat!(
-                "{\"ts_ms\":1,\"type\":\"run_started\",\"run_id\":\"100\",\"task\":\"legacy-task\"}\n",
+                "{\"ts_ms\":1,\"type\":\"run_started\",\"run_id\":\"100\",\"task\":\"legacy-task\",\"area\":\"api\"}\n",
                 "{\"ts_ms\":2,\"type\":\"risk_assessed\",\"attempt\":1,\"findings\":[]}\n"
             ),
         )
@@ -411,8 +310,8 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(replay.task, "legacy-task");
-        assert_eq!(replay.status, "RISK");
+        assert_eq!(replay.state.task, "legacy-task");
+        assert_eq!(replay.state.stage, "RISK");
         assert_eq!(replay.source, RunSource::Trajectory);
         fs::remove_dir_all(state).unwrap();
     }

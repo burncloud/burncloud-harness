@@ -112,15 +112,19 @@ fn refresh_replay(
 }
 
 fn render_replay(replay: &RunReplay, live: bool) -> String {
+    let state = &replay.state;
     let mut output = String::new();
     output.push_str(&format!("Mode: {}\n", if live { "LIVE" } else { "REPLAY" }));
-    output.push_str(&format!("Run ID: {}\n", replay.run_id));
-    output.push_str(&format!("Task: {}\n", replay.task));
-    output.push_str(&format!("Status: {}\n", replay.status));
+    output.push_str(&format!("Run ID: {}\n", state.run_id));
+    output.push_str(&format!("Task: {}\n", state.task));
+    output.push_str(&format!("Area: {}\n", state.area));
+    output.push_str(&format!("Stage: {}\n", state.stage));
+    output.push_str(&format!("Status: {}\n", state.status));
+    output.push_str(&format!("Attempt: {}\n", state.attempt));
     output.push_str(&format!("Source: {}\n\n", replay.source.as_str()));
     output.push_str("Timeline:\n");
 
-    for event in replay.events.iter().rev().take(20).rev() {
+    for event in state.timeline.iter().rev().take(20).rev() {
         output.push_str(&format!(
             "✓ {:<24} {}\n",
             event.name.to_uppercase(),
@@ -128,7 +132,19 @@ fn render_replay(replay: &RunReplay, live: bool) -> String {
         ));
     }
 
-    output.push_str("\nAuto-refresh: 250ms · Controls: q/esc quit · r refresh now\n");
+    if let Some(failure) = state.failures.last() {
+        output.push_str(&format!(
+            "\nLatest decision: #{} {} · {}\n",
+            failure.attempt, failure.class, failure.detail
+        ));
+    }
+    output.push_str(&format!(
+        "Changed files: {} · Risks: {} · Checks: {}\n",
+        state.changed_files.len(),
+        state.risk_findings.len(),
+        state.checks.len()
+    ));
+    output.push_str("Auto-refresh: 250ms · Controls: q/esc quit · r refresh now\n");
     output
 }
 
