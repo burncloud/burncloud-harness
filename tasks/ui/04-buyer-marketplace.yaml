@@ -1,14 +1,14 @@
-name: ui-migrate-01-buyer-overview-v1
+name: ui-migrate-04-buyer-marketplace-v1
 
 goal: |
-  Port the active Buyer Overview page from the approved source UI into the Rust/Dioxus
+  Port the active Buyer Marketplace page from the approved source UI into the Rust/Dioxus
   client in burncloud/burncloud.
 
   SOURCE IMPLEMENTATION TRUTH:
   - Repository: rustburn/burncloud-ui
   - Pinned source commit: ce4fa9d2e79928a388bffa363a1eec77f6998900
-  - Active page: src/pages/buyer/BuyerOverview.tsx
-  - Active routes/aliases: /, /buyer, /buyer/overview
+  - Active page: src/pages/buyer/BuyerMarketplace.tsx
+  - Active routes/aliases: /buyer/marketplace, /marketplace, /models
   - src/App.tsx is the authority for which source pages are currently reachable.
     Do not migrate obsolete generic page files that are not used by the active router.
 
@@ -29,13 +29,14 @@ goal: |
     design system.
   - Preserve source i18n behavior for en, zh, zh-TW, and ja. User-visible copy must remain
     localizable; do not hard-code English/Chinese strings when they belong in shared locale data.
-  - Preserve the active source routes/aliases for this page when doing so does not conflict
-    with the approved information architecture.
+  - Preserve /buyer/marketplace plus the active /marketplace and /models aliases when doing so
+    does not conflict with the approved information architecture.
   - Use real BurnCloud client data/API wiring where it exists. Source demo/mock values are
     visual reference only and must never become fake runtime facts. When real data is missing,
     render truthful Loading / Empty / Unknown / Unavailable states.
   - Keep Buyer mental model Model -> API -> Usage -> Billing and never expose GPU, supplier,
     IDC, routing topology, or internal infrastructure details by default.
+  - Buyer buys a model/tier/API product, not a supplier node or raw GPU resource.
   - Make the smallest coherent migration for THIS page. Shared i18n/layout/component changes
     are allowed only when required by this page and must be reusable by later migration tasks.
   - Do not redesign or migrate unrelated active pages in this task.
@@ -53,7 +54,7 @@ max_loops: 6
 context_files:
   - ../../docs/ui/product-standard.md
   - ../../docs/ui/information-architecture.md
-  - ../../docs/ui/page-contracts/buyer-overview.md
+  - ../../docs/ui/page-contracts/buyer-marketplace.md
   - ../../docs/ui/design-system.md
   - ../../docs/ui/interaction-rules.md
   - ../../docs/ui/content-standard.md
@@ -73,7 +74,7 @@ context_files:
   - ../../../burncloud-ui/src/i18n/locales/zhTW.ts
   - ../../../burncloud-ui/src/i18n/locales/ja.ts
   - ../../../burncloud-ui/src/index.css
-  - ../../../burncloud-ui/src/pages/buyer/BuyerOverview.tsx
+  - ../../../burncloud-ui/src/pages/buyer/BuyerMarketplace.tsx
 
 scope:
   allowed:
