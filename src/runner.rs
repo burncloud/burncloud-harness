@@ -710,7 +710,21 @@ fn run_agent(
         .current_dir(workspace)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if strict_visual || task.agent.append_prompt {
+    if strict_visual {
+        let prompt_path = state_dir
+            .join("runs")
+            .join(format!("{run_id}-attempt-{attempt}-agent-prompt.md"));
+        std::fs::write(&prompt_path, prompt).with_context(|| {
+            format!(
+                "failed to persist DSH agent prompt at {}",
+                prompt_path.display()
+            )
+        })?;
+        command.arg(format!(
+            "Read the complete task prompt from this exact UTF-8 file and execute it: {}",
+            prompt_path.display()
+        ));
+    } else if task.agent.append_prompt {
         command.arg(prompt);
     }
 
