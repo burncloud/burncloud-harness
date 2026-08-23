@@ -85,8 +85,6 @@ mod tests {
             status: "PASSED".to_owned(),
             attempt: 2,
             changed_files: vec!["src/main.rs".to_owned()],
-            violations: Vec::new(),
-            invariants: Vec::new(),
             risk_findings: vec!["review required".to_owned()],
             checks: vec![CheckState {
                 name: "cargo test".to_owned(),
@@ -101,6 +99,7 @@ mod tests {
                 name: "task_finished".to_owned(),
                 detail: "task finished".to_owned(),
             }],
+            ..RunState::default()
         };
 
         let explanation = render(&state);
