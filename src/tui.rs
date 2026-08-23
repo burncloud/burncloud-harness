@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event as TerminalEvent, KeyCode},
+    event::{self, Event as TerminalEvent, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -93,6 +93,10 @@ impl PanelId {
         };
         Self::from_coords(next_row, next_col)
     }
+
+    fn has_detail(self) -> bool {
+        matches!(self, Self::AgentActivity)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +110,13 @@ impl UiState {
     fn escape_to_dashboard(&mut self) {
         self.zoomed = false;
         self.scroll = 0;
+    }
+
+    fn open_focused_detail(&mut self) {
+        if self.focused.has_detail() {
+            self.zoomed = true;
+            self.scroll = 0;
+        }
     }
 }
 
@@ -166,6 +177,10 @@ fn drain_pending_input() -> Result<()> {
     Ok(())
 }
 
+fn should_handle_key(kind: KeyEventKind) -> bool {
+    kind == KeyEventKind::Press
+}
+
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state_dir: &Path,
@@ -180,13 +195,13 @@ fn run_loop(
 
         if event::poll(REFRESH_INTERVAL)? {
             if let TerminalEvent::Key(key) = event::read()? {
+                if !should_handle_key(key.kind) {
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Esc => ui.escape_to_dashboard(),
-                    KeyCode::Enter if !ui.zoomed => {
-                        ui.zoomed = true;
-                        ui.scroll = 0;
-                    }
+                    KeyCode::Enter if !ui.zoomed => ui.open_focused_detail(),
                     KeyCode::Up if ui.zoomed => ui.scroll = ui.scroll.saturating_sub(1),
                     KeyCode::Down if ui.zoomed => ui.scroll = ui.scroll.saturating_add(1),
                     KeyCode::PageUp if ui.zoomed => ui.scroll = ui.scroll.saturating_sub(8),
@@ -847,7 +862,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, replay: &RunReplay, live: bool, ui
             replay.state.risk_findings.len()
         )),
         Span::styled(
-            "←↑↓→ 选择 · Enter 详情 · Esc 首页 · r 刷新 · q 退出",
+            if ui.focused.has_detail() {
+                "←↑↓→ 选择 · Enter 详情 · Esc 首页 · r 刷新 · q 退出"
+            } else {
+                "←↑↓→ 选择 · 当前面板无详情 · Esc 首页 · r 刷新 · q 退出"
+            },
             Style::default().fg(Color::White),
         ),
     ]);
@@ -1132,6 +1151,32 @@ mod tests {
         ui.escape_to_dashboard();
         assert!(!ui.zoomed);
         assert_eq!(ui.scroll, 0);
+    }
+
+    #[test]
+    fn only_agent_activity_opens_detail() {
+        assert!(PanelId::AgentActivity.has_detail());
+        assert!(!PanelId::Summary.has_detail());
+        assert!(!PanelId::Checks.has_detail());
+
+        let mut ui = UiState {
+            focused: PanelId::Summary,
+            zoomed: false,
+            scroll: 0,
+        };
+        ui.open_focused_detail();
+        assert!(!ui.zoomed);
+
+        ui.focused = PanelId::AgentActivity;
+        ui.open_focused_detail();
+        assert!(ui.zoomed);
+    }
+
+    #[test]
+    fn repeated_or_released_keys_are_not_navigation_presses() {
+        assert!(should_handle_key(KeyEventKind::Press));
+        assert!(!should_handle_key(KeyEventKind::Repeat));
+        assert!(!should_handle_key(KeyEventKind::Release));
     }
 
     #[test]
