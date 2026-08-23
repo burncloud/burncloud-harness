@@ -192,7 +192,8 @@ impl RunState {
                 }
             }
             "agent_heartbeat" => {
-                self.agent_heartbeat_elapsed_secs = payload.get("elapsed_secs").and_then(Value::as_u64);
+                self.agent_heartbeat_elapsed_secs =
+                    payload.get("elapsed_secs").and_then(Value::as_u64);
             }
             "invariant_selected" | "invariants_selected" => {
                 self.invariants = string_array(payload, "invariants").unwrap_or_default();
@@ -388,8 +389,8 @@ fn stage_for(event: &str) -> &'static str {
     match event {
         "task_started" | "contract_loaded" | "run_started" => "TASK",
         "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
-        "loop_started" | "agent_started" | "agent_output" | "agent_heartbeat" | "agent_finished"
-        | "attempt_started" => "AGENT",
+        "loop_started" | "agent_started" | "agent_output" | "agent_heartbeat"
+        | "agent_finished" | "attempt_started" => "AGENT",
         "diff_detected" | "git_head_checked" | "scope_evaluated" => "SCOPE",
         "invariant_impact_assessed" | "invariant_expanded" => "INVARIANTS",
         "risk_assessed" | "risk_detected" => "RISK",
@@ -582,10 +583,7 @@ mod tests {
             &json!({"type": "task_started", "run_id": "run-1"}),
             Some(1_000),
         );
-        state.apply_at(
-            &json!({"type": "loop_started", "attempt": 1}),
-            Some(1_010),
-        );
+        state.apply_at(&json!({"type": "loop_started", "attempt": 1}), Some(1_010));
         state.apply_at(
             &json!({
                 "type": "agent_output",
