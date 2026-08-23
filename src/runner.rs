@@ -688,6 +688,30 @@ enum AgentLine {
     Stderr(String),
 }
 
+fn dsh_headless_command() -> Result<(Command, String)> {
+    #[cfg(windows)]
+    {
+        let app_data = std::env::var_os("APPDATA").context("APPDATA is required to locate DSH")?;
+        let entry = PathBuf::from(app_data)
+            .join("npm")
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh")
+            .join("lib")
+            .join("bin.js");
+        if !entry.is_file() {
+            bail!("DSH Node entry was not found at {}", entry.display());
+        }
+        let mut command = Command::new("node");
+        command.arg(&entry);
+        return Ok((command, format!("node {}", entry.display())));
+    }
+    #[cfg(not(windows))]
+    {
+        Ok((Command::new("dsh"), "dsh".to_owned()))
+    }
+}
+
 fn run_agent(
     workspace: &std::path::Path,
     task: &TaskSpec,
@@ -698,9 +722,9 @@ fn run_agent(
     strict_visual: bool,
 ) -> Result<AgentResult> {
     let (mut command, program_label) = if strict_visual {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/S", "/C", "dsh.cmd", "--profile", "headless"]);
-        (command, "dsh --profile headless".to_owned())
+        let (mut command, label) = dsh_headless_command()?;
+        command.args(["--profile", "headless"]);
+        (command, label)
     } else {
         let mut command = Command::new(&task.agent.program);
         command.args(&task.agent.args);
