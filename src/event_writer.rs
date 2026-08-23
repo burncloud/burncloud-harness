@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use tracing::{info, warn};
 
 use crate::{agent_activity, events::HarnessEvent};
 
@@ -154,6 +155,7 @@ impl RunEventWriter {
         let line = serde_json::to_string(&EventRecord::new(&event, sequence))?;
         self.primary.append_line(&line)?;
         self.latest.append_line(&line)?;
+        trace_curated_agent_activity(&event);
         Ok(())
     }
 
@@ -174,6 +176,39 @@ fn curated_event(event: &HarnessEvent) -> Option<HarnessEvent> {
             line: curated.line,
         }),
         _ => Some(event.clone()),
+    }
+}
+
+fn trace_curated_agent_activity(event: &HarnessEvent) {
+    let HarnessEvent::AgentOutput {
+        attempt,
+        stream,
+        line,
+    } = event
+    else {
+        return;
+    };
+
+    match stream.as_str() {
+        "stderr" => warn!(
+            attempt,
+            phase = "AGENT",
+            activity = %line,
+            "agent activity"
+        ),
+        "change_intent" | "change_result" => info!(
+            attempt,
+            phase = "AGENT",
+            kind = %stream,
+            activity = %line,
+            "agent change"
+        ),
+        _ => info!(
+            attempt,
+            phase = "AGENT",
+            activity = %line,
+            "agent activity"
+        ),
     }
 }
 

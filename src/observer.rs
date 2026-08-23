@@ -11,6 +11,8 @@ use std::{
 use anyhow::Result;
 use tracing::{error, info, warn};
 
+const HEARTBEAT_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunPhase {
     Prepare,
@@ -287,7 +289,7 @@ fn start_agent_heartbeat(attempt: u32) {
     thread::spawn(move || {
         let started = Instant::now();
         loop {
-            thread::sleep(Duration::from_secs(5));
+            thread::sleep(HEARTBEAT_LOG_INTERVAL);
             if thread_stop.load(Ordering::Relaxed) {
                 break;
             }
