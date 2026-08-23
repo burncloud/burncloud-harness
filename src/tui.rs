@@ -15,7 +15,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame, Terminal,
 };
 
@@ -27,6 +27,8 @@ use crate::{
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const PHASES: [&str; 6] = ["AGENT", "SCOPE", "INVARIANTS", "RISK", "VERIFY", "FEEDBACK"];
+const PANEL_GUTTER: u16 = 2;
+const PANEL_PADDING: u16 = 1;
 
 pub fn list_runs(workspace: &Path) -> Result<()> {
     let state_dir = harness_state_dir(workspace)?;
@@ -840,7 +842,7 @@ fn split_horizontal(area: Rect, left_percent: u16) -> [Rect; 2] {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(left_percent),
-            Constraint::Length(1),
+            Constraint::Length(PANEL_GUTTER),
             Constraint::Min(0),
         ])
         .split(area);
@@ -864,6 +866,7 @@ fn panel(title: &'static str) -> Block<'static> {
         .title(format!(" {title} "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::new(PANEL_PADDING, PANEL_PADDING, 0, 0))
 }
 
 fn kv(label: &'static str, value: &str) -> Line<'static> {
