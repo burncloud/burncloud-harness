@@ -66,6 +66,8 @@ pub struct ScopeSpec {
     pub allowed: Vec<String>,
     #[serde(default)]
     pub avoid: Vec<String>,
+    #[serde(default)]
+    pub max_changed_files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,6 +110,9 @@ impl TaskSpec {
         }
         if self.scope.allowed.is_empty() {
             bail!("scope.allowed must not be empty; burncloud-harness fails closed");
+        }
+        if self.scope.max_changed_files == Some(0) {
+            bail!("scope.max_changed_files must be at least 1 when declared");
         }
         if self.agent.program.trim().is_empty() {
             bail!("agent.program must not be empty");
@@ -246,6 +251,33 @@ mod tests {
             scope: ScopeSpec {
                 allowed: vec![],
                 avoid: vec![],
+                max_changed_files: None,
+            },
+            agent: AgentSpec {
+                program: "agent".into(),
+                args: vec![],
+                append_prompt: true,
+            },
+            context_files: vec![],
+            resolved_context_files: vec![],
+            extra_checks: vec![],
+        };
+
+        assert!(task.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_change_budget() {
+        let task = TaskSpec {
+            name: "test".into(),
+            goal: "do something".into(),
+            workspace: ".".into(),
+            max_loops: 1,
+            area: BurncloudArea::Ui,
+            scope: ScopeSpec {
+                allowed: vec!["crates/client/**".into()],
+                avoid: vec![],
+                max_changed_files: Some(0),
             },
             agent: AgentSpec {
                 program: "agent".into(),
@@ -271,6 +303,7 @@ mod tests {
             scope: ScopeSpec {
                 allowed: vec!["crates/client/**".into()],
                 avoid: vec![],
+                max_changed_files: None,
             },
             agent: AgentSpec {
                 program: "codex".into(),
@@ -316,6 +349,7 @@ area: ui
 scope:
   allowed:
     - crates/client/**
+  max_changed_files: 8
 agent:
   program: codex
   args:
@@ -329,6 +363,7 @@ context_files:
         let task = TaskSpec::load(&task_path).unwrap();
         let expected = context_path.canonicalize().unwrap();
 
+        assert_eq!(task.scope.max_changed_files, Some(8));
         assert_eq!(task.resolved_context_files.len(), 1);
         assert_eq!(task.resolved_context_files[0].absolute_path, expected);
         assert!(task
@@ -351,6 +386,7 @@ context_files:
             scope: ScopeSpec {
                 allowed: vec!["crates/client/**".into()],
                 avoid: vec![],
+                max_changed_files: None,
             },
             agent: AgentSpec {
                 program: "codex".into(),
