@@ -536,10 +536,12 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             });
         }
 
-        let feedback = format!(
-            "BurnCloud mandatory verification failed. Fix the existing in-scope change; do not widen scope or weaken tests.\n{}",
-            failed.join("\n")
-        );
+        let verification_guidance = if strict_visual {
+            "BurnCloud strict source-parity verification failed. Inspect reference/local/diff PNGs and report.json before editing. Compare the pinned source TSX and Dioxus RSX node-for-node, including wrapper hierarchy, exact text, icons, and responsive overflow. Prefer the source Tailwind class lists backed by crates/client/src/aether_source.css over approximating dimensions through buyer-* semantic CSS. Do not weaken pixel thresholds, mask regions, alter source behavior, widen scope, or change production data outside the capture fixture."
+        } else {
+            "BurnCloud mandatory verification failed. Fix the existing in-scope change; do not widen scope or weaken tests."
+        };
+        let feedback = format!("{verification_guidance}\n{}", failed.join("\n"));
         record_retry(
             &mut trajectory,
             observer,
