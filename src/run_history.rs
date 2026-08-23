@@ -169,13 +169,12 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
 fn stage_for(event: &str) -> &'static str {
     match event {
         "task_started" | "contract_loaded" | "run_started" => "TASK",
-        "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => {
-            "ROUTE"
-        }
+        "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
         "loop_started" | "agent_started" | "agent_finished" | "attempt_started"
         | "attempt_failed" => "AGENT",
-        "diff_detected" | "git_head_checked" | "scope_evaluated"
-        | "invariant_impact_assessed" => "SCOPE",
+        "diff_detected" | "git_head_checked" | "scope_evaluated" | "invariant_impact_assessed" => {
+            "SCOPE"
+        }
         "risk_assessed" => "RISK",
         "verification_started" | "verification_finished" | "check_finished" => "VERIFY",
         _ => "TASK",
