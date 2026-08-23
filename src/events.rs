@@ -24,6 +24,10 @@ pub enum HarnessEvent {
     LoopStarted {
         attempt: u32,
     },
+    StageStarted {
+        attempt: u32,
+        stage: String,
+    },
     AgentStarted {
         agent: String,
         attempt: u32,
