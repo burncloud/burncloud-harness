@@ -2,7 +2,6 @@ mod analysis;
 mod burncloud;
 mod checks;
 mod config;
-mod console;
 mod event_writer;
 mod events;
 mod git;
@@ -66,10 +65,8 @@ enum Commands {
         #[arg(short, long)]
         task: PathBuf,
         #[arg(long)]
-        tui: bool,
-        #[arg(long, conflicts_with = "tui")]
         resume: bool,
-        #[arg(long, requires = "resume", conflicts_with = "tui")]
+        #[arg(long, requires = "resume")]
         verify_existing: bool,
     },
 }
@@ -103,14 +100,11 @@ fn main() -> Result<()> {
         } => recommend_workspace(workspace, limit, min_count)?,
         Commands::Run {
             task,
-            tui,
             resume,
             verify_existing,
         } => {
             let task = TaskSpec::load(task)?;
-            let summary = if tui {
-                console::run(task)?
-            } else if verify_existing {
+            let summary = if verify_existing {
                 runner::verify_existing(task)?
             } else if resume {
                 runner::resume(task)?
