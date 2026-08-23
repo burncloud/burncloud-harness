@@ -4,6 +4,7 @@ mod checks;
 mod config;
 mod event_writer;
 mod events;
+mod evidence;
 mod git;
 mod invariants;
 mod observer;
@@ -11,6 +12,7 @@ mod policy;
 mod proposal;
 mod risk;
 mod route;
+mod run_explain;
 mod run_history;
 mod run_state;
 mod runner;
@@ -46,6 +48,10 @@ enum Commands {
     Explain {
         #[arg(short, long)]
         task: PathBuf,
+    },
+    ExplainRun {
+        #[arg(long)]
+        run: String,
     },
     Analyze {
         #[arg(default_value = ".")]
@@ -92,6 +98,7 @@ fn main() -> Result<()> {
             );
         }
         Commands::Explain { task } => explain_task(TaskSpec::load(task)?)?,
+        Commands::ExplainRun { run } => explain_run(&run)?,
         Commands::Analyze { workspace, limit } => analyze_workspace(workspace, limit)?,
         Commands::Recommend {
             workspace,
@@ -141,6 +148,17 @@ fn explain_task(task: TaskSpec) -> Result<()> {
         println!("\nAvoid scope:\n- {}", task.scope.avoid.join("\n- "));
     }
 
+    Ok(())
+}
+
+fn explain_run(run_id: &str) -> Result<()> {
+    let workspace = PathBuf::from(".").canonicalize()?;
+    let git = git::GitRepo::new(workspace);
+    git.ensure_repository()?;
+    let state_dir = git.harness_state_dir()?;
+    let artifact = run_history::resolve(&state_dir, Some(run_id))?;
+    let replay = run_history::load(&artifact)?;
+    print!("{}", run_explain::render(&replay.state));
     Ok(())
 }
 
