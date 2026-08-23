@@ -119,7 +119,7 @@ fn draw_dashboard(frame: &mut Frame, replay: &RunReplay, live: bool) {
             Constraint::Length(3),
             Constraint::Length(9),
             Constraint::Length(12),
-            Constraint::Min(10),
+            Constraint::Min(12),
             Constraint::Length(3),
         ])
         .split(area);
@@ -135,7 +135,7 @@ fn draw_dashboard(frame: &mut Frame, replay: &RunReplay, live: bool) {
     draw_invariants(frame, middle[1], &replay.state);
 
     let bottom = split_horizontal(rows[3], 50, 50);
-    draw_changes_and_risk(frame, bottom[0], &replay.state);
+    draw_activity_changes_and_risk(frame, bottom[0], &replay.state);
     draw_checks(frame, bottom[1], &replay.state);
 
     draw_footer(frame, rows[4], replay, live);
@@ -187,11 +187,29 @@ fn draw_task(frame: &mut Frame, area: Rect, state: &RunState) {
     } else {
         format!("{}/{}", state.attempt, state.max_loops)
     };
-    let current = state
-        .timeline
-        .last()
-        .map(|event| event_summary_zh(&event.name, &event.detail))
-        .unwrap_or_else(|| "等待事件".to_owned());
+    let current = if state.stage == "AGENT" {
+        state
+            .agent_activity
+            .last()
+            .map(|activity| {
+                format!(
+                    "智能体{} · {}",
+                    if activity.stream == "stderr" {
+                        "错误"
+                    } else {
+                        "输出"
+                    },
+                    compact(&activity.line, 72)
+                )
+            })
+            .unwrap_or_else(|| "智能体已启动，等待首条输出".to_owned())
+    } else {
+        state
+            .timeline
+            .last()
+            .map(|event| event_summary_zh(&event.name, &event.detail))
+            .unwrap_or_else(|| "等待事件".to_owned())
+    };
     let total = state
         .total_elapsed_ms(now)
         .map(format_duration)
@@ -408,21 +426,67 @@ fn draw_invariants(frame: &mut Frame, area: Rect, state: &RunState) {
     );
 }
 
-fn draw_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunState) {
+fn draw_activity_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunState) {
+    let now = now_ms();
     let mut lines = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "智能体实时活动",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    if state.agent_activity.is_empty() {
+        let heartbeat = state
+            .agent_heartbeat_elapsed_secs
+            .map(|seconds| format!(" · 心跳 {seconds}秒"))
+            .unwrap_or_default();
+        lines.push(Line::from(Span::styled(
+            format!("等待智能体输出{heartbeat}"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let age = state
+            .agent_last_output_ms
+            .map(|timestamp| format_duration(now.saturating_sub(timestamp)))
+            .unwrap_or_else(|| "--".to_owned());
+        let heartbeat = state
+            .agent_heartbeat_elapsed_secs
+            .map(|seconds| format!(" · 进程心跳 {seconds}秒"))
+            .unwrap_or_default();
+        lines.push(Line::from(Span::styled(
+            format!("最后输出 {age} 前{heartbeat}"),
+            Style::default().fg(Color::DarkGray),
+        )));
+        for activity in state.agent_activity.iter().rev().take(4).rev() {
+            let (marker, color) = if activity.stream == "stderr" {
+                ("错误", Color::Red)
+            } else {
+                ("输出", Color::Cyan)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{marker}  "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(compact(&activity.line, 82)),
+            ]));
+        }
+    }
+
     if state.changed_files.is_empty() {
         lines.push(Line::from(Span::styled(
-            "尚未发现文件变更",
+            "变更  尚未进入 Git 差异检查",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "变更文件",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         )));
-        for path in state.changed_files.iter().take(6) {
+        for path in state.changed_files.iter().take(3) {
             lines.push(Line::from(format!("• {}", compact(path, 82))));
         }
     }
@@ -439,7 +503,7 @@ fn draw_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunState) {
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for finding in state.risk_findings.iter().take(3) {
+        for finding in state.risk_findings.iter().take(2) {
             lines.push(Line::from(Span::styled(
                 compact(finding, 88),
                 Style::default().fg(Color::Yellow),
@@ -449,7 +513,7 @@ fn draw_changes_and_risk(frame: &mut Frame, area: Rect, state: &RunState) {
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("变更路径 + 风险"))
+            .block(panel("智能体活动 + 变更 + 风险"))
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -579,6 +643,8 @@ fn event_name_zh(name: &str) -> &'static str {
         "loop_started" | "attempt_started" => "循环开始",
         "stage_started" => "阶段开始",
         "agent_started" => "智能体开始",
+        "agent_output" => "智能体输出",
+        "agent_heartbeat" => "智能体心跳",
         "agent_finished" => "智能体结束",
         "diff_detected" => "发现变更",
         "scope_evaluated" => "范围检查",

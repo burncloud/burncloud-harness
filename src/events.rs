@@ -32,6 +32,15 @@ pub enum HarnessEvent {
         agent: String,
         attempt: u32,
     },
+    AgentOutput {
+        attempt: u32,
+        stream: String,
+        line: String,
+    },
+    AgentHeartbeat {
+        attempt: u32,
+        elapsed_secs: u64,
+    },
     AgentFinished {
         success: bool,
         exit_code: Option<i32>,

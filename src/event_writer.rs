@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::events::HarnessEvent;
@@ -24,9 +24,7 @@ pub struct EventWriter {
 impl EventWriter {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
-        let existing = fs::read_to_string(&path)
-            .map(|content| content.lines().count() as u64)
-            .unwrap_or(0);
+        let existing = line_count(&path);
         Self {
             path,
             sequence: Arc::new(AtomicU64::new(existing)),
@@ -44,7 +42,21 @@ impl EventWriter {
     }
 
     fn next_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::SeqCst) + 1
+        // A live agent-output writer can be opened while the trajectory writer still owns
+        // another EventWriter for the same run. Reconcile with the on-disk stream before
+        // allocating the next sequence so the append-only event order stays monotonic.
+        loop {
+            let observed = self.sequence.load(Ordering::SeqCst);
+            let on_disk = line_count(&self.path);
+            let base = observed.max(on_disk);
+            if self
+                .sequence
+                .compare_exchange(observed, base + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return base + 1;
+            }
+        }
     }
 
     fn append_line(&self, line: &str) -> Result<()> {
@@ -96,10 +108,37 @@ impl RunEventWriter {
         })?;
         fs::write(latest_dir.join("run_id"), format!("{run_id}\n"))?;
 
-        Ok(Self {
-            primary: EventWriter::new(run_dir.join("events.jsonl")),
-            latest: EventWriter::new(latest_dir.join("events.jsonl")),
-        })
+        Ok(Self::from_paths(&runs_dir, run_id))
+    }
+
+    pub fn open(state_dir: &Path, run_id: &str) -> Result<Self> {
+        let runs_dir = state_dir.join("runs");
+        let run_events = runs_dir.join(run_id).join("events.jsonl");
+        if !run_events.is_file() {
+            bail!(
+                "Harness event stream does not exist: {}",
+                run_events.display()
+            );
+        }
+        let latest_run = fs::read_to_string(runs_dir.join("latest/run_id"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if latest_run != run_id {
+            bail!(
+                "Harness latest event stream belongs to run {}, not {}",
+                latest_run,
+                run_id
+            );
+        }
+        Ok(Self::from_paths(&runs_dir, run_id))
+    }
+
+    fn from_paths(runs_dir: &Path, run_id: &str) -> Self {
+        Self {
+            primary: EventWriter::new(runs_dir.join(run_id).join("events.jsonl")),
+            latest: EventWriter::new(runs_dir.join("latest/events.jsonl")),
+        }
     }
 
     pub fn append(&self, event: &HarnessEvent) -> Result<()> {
@@ -134,6 +173,12 @@ impl<'a> EventRecord<'a> {
             event,
         }
     }
+}
+
+fn line_count(path: &Path) -> u64 {
+    fs::read_to_string(path)
+        .map(|content| content.lines().count() as u64)
+        .unwrap_or(0)
 }
 
 fn timestamp_ms() -> u128 {
@@ -191,6 +236,46 @@ mod tests {
         assert_eq!(records[0]["sequence"], 1);
         assert_eq!(records[1]["sequence"], 2);
         assert!(records[0]["timestamp_ms"].as_u64().is_some());
+
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn live_writer_continues_sequence_owned_by_existing_writer() {
+        let state = temp_state();
+        let writer = RunEventWriter::create(&state, "run-1").unwrap();
+        writer
+            .append(&HarnessEvent::LoopStarted { attempt: 1 })
+            .unwrap();
+
+        let live = RunEventWriter::open(&state, "run-1").unwrap();
+        live.append(&HarnessEvent::AgentOutput {
+            attempt: 1,
+            stream: "stdout".to_owned(),
+            line: "reading dashboard.rs".to_owned(),
+        })
+        .unwrap();
+
+        writer
+            .append(&HarnessEvent::AgentFinished {
+                success: true,
+                exit_code: Some(0),
+                attempt: 1,
+            })
+            .unwrap();
+
+        let primary = fs::read_to_string(writer.path()).unwrap();
+        let records = primary
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[0]["sequence"], 1);
+        assert_eq!(records[1]["sequence"], 2);
+        assert_eq!(records[2]["sequence"], 3);
+        assert_eq!(
+            primary,
+            fs::read_to_string(state.join("runs/latest/events.jsonl")).unwrap()
+        );
 
         fs::remove_dir_all(state).unwrap();
     }

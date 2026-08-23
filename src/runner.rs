@@ -155,7 +155,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 attempt,
                 previous_feedback.as_deref(),
             );
-            run_agent(&workspace, &task, &prompt)?
+            run_agent(&workspace, &task, &prompt, &state_dir, &run_id, attempt)?
         } else {
             AgentResult {
                 success: true,
@@ -613,23 +613,186 @@ struct AgentResult {
     stderr: String,
 }
 
-fn run_agent(workspace: &std::path::Path, task: &TaskSpec, prompt: &str) -> Result<AgentResult> {
+enum AgentLine {
+    Stdout(String),
+    Stderr(String),
+}
+
+fn run_agent(
+    workspace: &std::path::Path,
+    task: &TaskSpec,
+    prompt: &str,
+    state_dir: &std::path::Path,
+    run_id: &str,
+    attempt: u32,
+) -> Result<AgentResult> {
     let mut command = Command::new(&task.agent.program);
-    command.args(&task.agent.args).current_dir(workspace);
+    command
+        .args(&task.agent.args)
+        .current_dir(workspace)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     if task.agent.append_prompt {
         command.arg(prompt);
     }
 
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
         .with_context(|| format!("failed to start agent program '{}'", task.agent.program))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("agent stdout pipe was not available")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("agent stderr pipe was not available")?;
+
+    let events = crate::event_writer::RunEventWriter::open(state_dir, run_id)?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let stdout_sender = sender.clone();
+    let stderr_sender = sender.clone();
+    drop(sender);
+
+    let stdout_thread = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    if stdout_sender.send(AgentLine::Stdout(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = stdout_sender.send(AgentLine::Stderr(format!(
+                        "failed reading agent stdout: {error}"
+                    )));
+                    break;
+                }
+            }
+        }
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    if stderr_sender.send(AgentLine::Stderr(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = stderr_sender.send(AgentLine::Stderr(format!(
+                        "failed reading agent stderr: {error}"
+                    )));
+                    break;
+                }
+            }
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let mut next_heartbeat_secs = 5_u64;
+    let mut stdout_buffer = String::new();
+    let mut stderr_buffer = String::new();
+
+    let status = loop {
+        match receiver.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(line) => record_agent_line(
+                &events,
+                attempt,
+                line,
+                &mut stdout_buffer,
+                &mut stderr_buffer,
+            )?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        let elapsed_secs = started.elapsed().as_secs();
+        while elapsed_secs >= next_heartbeat_secs {
+            events.append(&crate::events::HarnessEvent::AgentHeartbeat {
+                attempt,
+                elapsed_secs: next_heartbeat_secs,
+            })?;
+            next_heartbeat_secs += 5;
+        }
+
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+    };
+
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+    while let Ok(line) = receiver.try_recv() {
+        record_agent_line(
+            &events,
+            attempt,
+            line,
+            &mut stdout_buffer,
+            &mut stderr_buffer,
+        )?;
+    }
 
     Ok(AgentResult {
-        success: output.status.success(),
-        exit_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        success: status.success(),
+        exit_code: status.code(),
+        stdout: stdout_buffer,
+        stderr: stderr_buffer,
     })
+}
+
+fn record_agent_line(
+    events: &crate::event_writer::RunEventWriter,
+    attempt: u32,
+    line: AgentLine,
+    stdout: &mut String,
+    stderr: &mut String,
+) -> Result<()> {
+    let (stream, value) = match line {
+        AgentLine::Stdout(value) => {
+            stdout.push_str(&value);
+            stdout.push('\n');
+            ("stdout", value)
+        }
+        AgentLine::Stderr(value) => {
+            stderr.push_str(&value);
+            stderr.push('\n');
+            ("stderr", value)
+        }
+    };
+
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+
+    let live_line = compact_agent_line(&value, 1_000);
+    events.append(&crate::events::HarnessEvent::AgentOutput {
+        attempt,
+        stream: stream.to_owned(),
+        line: live_line.clone(),
+    })?;
+
+    if stream == "stderr" {
+        tracing::warn!(attempt, phase = "AGENT", stream, line = %live_line, "agent output");
+    } else {
+        tracing::info!(attempt, phase = "AGENT", stream, line = %live_line, "agent output");
+    }
+    Ok(())
+}
+
+fn compact_agent_line(value: &str, limit: usize) -> String {
+    let normalized = value.trim().replace('\t', " ");
+    if normalized.chars().count() <= limit {
+        normalized
+    } else {
+        format!("{}…", normalized.chars().take(limit).collect::<String>())
+    }
 }
 
 fn compact_failure(primary: &str, fallback: &str) -> String {

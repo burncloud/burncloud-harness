@@ -7,6 +7,14 @@ pub struct TimelineEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentActivity {
+    pub attempt: u32,
+    pub stream: String,
+    pub line: String,
+    pub timestamp_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckState {
     pub name: String,
     pub success: Option<bool>,
@@ -49,6 +57,9 @@ pub struct RunState {
     pub checks: Vec<CheckState>,
     pub failures: Vec<FailureState>,
     pub timeline: Vec<TimelineEvent>,
+    pub agent_activity: Vec<AgentActivity>,
+    pub agent_last_output_ms: Option<u64>,
+    pub agent_heartbeat_elapsed_secs: Option<u64>,
     pub timings: Vec<StageTiming>,
     pub started_ms: Option<u64>,
     pub finished_ms: Option<u64>,
@@ -75,6 +86,9 @@ impl Default for RunState {
             checks: Vec::new(),
             failures: Vec::new(),
             timeline: Vec::new(),
+            agent_activity: Vec::new(),
+            agent_last_output_ms: None,
+            agent_heartbeat_elapsed_secs: None,
             timings: Vec::new(),
             started_ms: None,
             finished_ms: None,
@@ -150,6 +164,36 @@ impl RunState {
                 self.violations.clear();
                 self.risk_findings.clear();
                 self.checks.clear();
+                self.agent_activity.clear();
+                self.agent_last_output_ms = None;
+                self.agent_heartbeat_elapsed_secs = None;
+            }
+            "agent_output" => {
+                let line = payload
+                    .get("line")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !line.trim().is_empty() {
+                    self.agent_activity.push(AgentActivity {
+                        attempt: u32_field(payload, "attempt").unwrap_or(self.attempt),
+                        stream: payload
+                            .get("stream")
+                            .and_then(Value::as_str)
+                            .unwrap_or("stdout")
+                            .to_owned(),
+                        line: line.to_owned(),
+                        timestamp_ms,
+                    });
+                    if self.agent_activity.len() > 50 {
+                        let remove = self.agent_activity.len() - 50;
+                        self.agent_activity.drain(0..remove);
+                    }
+                    self.agent_last_output_ms = timestamp_ms;
+                }
+            }
+            "agent_heartbeat" => {
+                self.agent_heartbeat_elapsed_secs =
+                    payload.get("elapsed_secs").and_then(Value::as_u64);
             }
             "invariant_selected" | "invariants_selected" => {
                 self.invariants = string_array(payload, "invariants").unwrap_or_default();
@@ -237,10 +281,12 @@ impl RunState {
             _ => {}
         }
 
-        self.timeline.push(TimelineEvent {
-            name: name.to_owned(),
-            detail: detail_for(payload, name),
-        });
+        if !matches!(name, "agent_output" | "agent_heartbeat") {
+            self.timeline.push(TimelineEvent {
+                name: name.to_owned(),
+                detail: detail_for(payload, name),
+            });
+        }
     }
 
     pub fn total_elapsed_ms(&self, now_ms: u64) -> Option<u64> {
@@ -343,7 +389,8 @@ fn stage_for(event: &str) -> &'static str {
     match event {
         "task_started" | "contract_loaded" | "run_started" => "TASK",
         "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
-        "loop_started" | "agent_started" | "agent_finished" | "attempt_started" => "AGENT",
+        "loop_started" | "agent_started" | "agent_output" | "agent_heartbeat"
+        | "agent_finished" | "attempt_started" => "AGENT",
         "diff_detected" | "git_head_checked" | "scope_evaluated" => "SCOPE",
         "invariant_impact_assessed" | "invariant_expanded" => "INVARIANTS",
         "risk_assessed" | "risk_detected" => "RISK",
@@ -362,6 +409,20 @@ fn detail_for(payload: &Value, name: &str) -> String {
             .and_then(Value::as_str)
             .unwrap_or("stage")
             .to_owned();
+    }
+    if name == "agent_output" {
+        return payload
+            .get("line")
+            .and_then(Value::as_str)
+            .unwrap_or("agent output")
+            .to_owned();
+    }
+    if name == "agent_heartbeat" {
+        return payload
+            .get("elapsed_secs")
+            .and_then(Value::as_u64)
+            .map(|seconds| format!("agent alive for {seconds}s"))
+            .unwrap_or_else(|| "agent heartbeat".to_owned());
     }
     if let Some(reason) = payload
         .get("reason")
@@ -513,6 +574,40 @@ mod tests {
         assert_eq!(state.total_elapsed_ms(2_900), Some(1_900));
         assert_eq!(state.status, "PASSED");
         assert_eq!(state.stage, "DONE");
+    }
+
+    #[test]
+    fn reducer_tracks_live_agent_activity_without_flooding_timeline() {
+        let mut state = RunState::default();
+        state.apply_at(
+            &json!({"type": "task_started", "run_id": "run-1"}),
+            Some(1_000),
+        );
+        state.apply_at(&json!({"type": "loop_started", "attempt": 1}), Some(1_010));
+        state.apply_at(
+            &json!({
+                "type": "agent_output",
+                "attempt": 1,
+                "stream": "stdout",
+                "line": "Reading crates/client/src/lib.rs"
+            }),
+            Some(2_000),
+        );
+        state.apply_at(
+            &json!({
+                "type": "agent_heartbeat",
+                "attempt": 1,
+                "elapsed_secs": 5
+            }),
+            Some(6_000),
+        );
+
+        assert_eq!(state.stage, "AGENT");
+        assert_eq!(state.agent_activity.len(), 1);
+        assert_eq!(state.agent_activity[0].stream, "stdout");
+        assert_eq!(state.agent_last_output_ms, Some(2_000));
+        assert_eq!(state.agent_heartbeat_elapsed_secs, Some(5));
+        assert_eq!(state.timeline.len(), 2);
     }
 
     #[test]
