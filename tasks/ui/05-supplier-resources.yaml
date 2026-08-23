@@ -1,0 +1,96 @@
+name: ui-migrate-05-supplier-resources-v1
+
+goal: |
+  Port the active Supplier Resources page from the approved source UI into the Rust/Dioxus
+  client in burncloud/burncloud.
+
+  SOURCE IMPLEMENTATION TRUTH:
+  - Repository: rustburn/burncloud-ui
+  - Pinned source commit: ce4fa9d2e79928a388bffa363a1eec77f6998900
+  - Active page: src/pages/supplier/SupplierResources.tsx
+  - Active routes/aliases: /supplier/resources
+  - src/App.tsx is the authority for which source pages are currently reachable.
+    Do not migrate obsolete generic page files that are not used by the active router.
+
+  TARGET PRODUCT TRUTH:
+  - The BurnCloud UI standards and the page contract listed in context_files.
+  - If the source UI conflicts with an approved product contract, role boundary,
+    truthful-state rule, security rule, or current BurnCloud runtime fact, the approved
+    contract/current runtime truth wins. Record the parity gap instead of copying the conflict.
+
+  IMPLEMENTATION REQUIREMENTS:
+  - First inspect the current Rust/Dioxus route, page implementation, shared components,
+    data/API wiring, and executable UI gates before editing.
+  - Reproduce the source page's layout, hierarchy, controls, interaction shape, density,
+    typography, spacing, states, and visual treatment as closely as practical in Dioxus.
+  - Translate React/TypeScript/Tailwind patterns into idiomatic Rust/Dioxus and the existing
+    BurnCloud CSS/component system. Do not add React, Vite, Node, or a second frontend runtime.
+  - Reuse or minimally extend shared Rust UI primitives. Do not create a page-local duplicate
+    design system.
+  - Preserve source i18n behavior for en, zh, zh-TW, and ja. User-visible copy must remain
+    localizable; do not hard-code English/Chinese strings when they belong in shared locale data.
+  - Preserve /supplier/resources and the source interaction model when doing so does not
+    conflict with the approved information architecture.
+  - Use real BurnCloud client data/API wiring where it exists. Source demo/mock values are
+    visual reference only and must never become fake runtime facts. When real data is missing,
+    render truthful Loading / Empty / Unknown / Unavailable states.
+  - Keep Supplier mental model GPU -> Health -> Contribution -> Earnings. Do not give Supplier
+    traffic control or model-deployment authority beyond the approved contract.
+  - Make the smallest coherent migration for THIS page. Shared i18n/layout/component changes
+    are allowed only when required by this page and must be reusable by later migration tasks.
+  - Do not redesign or migrate unrelated active pages in this task.
+  - Do not change router/server/service/database behavior outside the client scope.
+  - End with a parity report: source elements reproduced, intentional contract-driven
+    differences, data-wiring differences, verification run, and remaining gaps.
+
+  This task is part of the ordered UI migration program in tasks/ui/README.md.
+  Do not skip ahead to later pages.
+
+workspace: ../burncloud
+area: ui
+max_loops: 6
+
+context_files:
+  - ../../docs/ui/product-standard.md
+  - ../../docs/ui/information-architecture.md
+  - ../../docs/ui/page-contracts/supplier-resources.md
+  - ../../docs/ui/design-system.md
+  - ../../docs/ui/interaction-rules.md
+  - ../../docs/ui/content-standard.md
+  - ../../docs/ui/review-checklist.md
+  - ../../docs/ui/agent-execution.md
+  - ../../../burncloud-ui/src/App.tsx
+  - ../../../burncloud-ui/src/components/Layout.tsx
+  - ../../../burncloud-ui/src/components/LanguageSwitcher.tsx
+  - ../../../burncloud-ui/src/components/Logo.tsx
+  - ../../../burncloud-ui/src/components/ui.tsx
+  - ../../../burncloud-ui/src/context/RoleContext.tsx
+  - ../../../burncloud-ui/src/data/workbenchData.ts
+  - ../../../burncloud-ui/src/i18n/I18nContext.tsx
+  - ../../../burncloud-ui/src/i18n/types.ts
+  - ../../../burncloud-ui/src/i18n/locales/en.ts
+  - ../../../burncloud-ui/src/i18n/locales/zh.ts
+  - ../../../burncloud-ui/src/i18n/locales/zhTW.ts
+  - ../../../burncloud-ui/src/i18n/locales/ja.ts
+  - ../../../burncloud-ui/src/index.css
+  - ../../../burncloud-ui/src/pages/supplier/SupplierResources.tsx
+
+scope:
+  allowed:
+    - crates/client/**
+    - crates/tests/tests/e2e/**
+
+  avoid:
+    - crates/router/**
+    - crates/server/**
+    - crates/service/**
+    - crates/database/**
+
+agent:
+  program: codex
+  args:
+    - exec
+    - --full-auto
+  append_prompt: true
+
+extra_checks: []
