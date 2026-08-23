@@ -9,6 +9,11 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::{
+    event_writer::RunEventWriter,
+    events::HarnessEvent,
+};
+
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureClass {
@@ -204,8 +209,6 @@ fn load_resume_provenance(path: &Path) -> Result<Option<ResumeProvenance>> {
                     return Ok(None);
                 };
                 let Some(baseline_head) = string_field(&value, "baseline_head") else {
-                    // Historical trajectories predate resumable provenance and
-                    // must not be accepted as proof for a dirty worktree.
                     return Ok(None);
                 };
                 let Some(allowed) = string_vec_field(&value, "allowed") else {
@@ -297,6 +300,8 @@ fn string_vec_field(value: &Value, key: &str) -> Option<Vec<String>> {
 pub struct TrajectoryWriter {
     path: PathBuf,
     writer: BufWriter<File>,
+    events: RunEventWriter,
+    agent_program: Option<String>,
 }
 
 impl TrajectoryWriter {
@@ -310,14 +315,18 @@ impl TrajectoryWriter {
             .write(true)
             .open(&path)
             .with_context(|| format!("failed to create trajectory {}", path.display()))?;
+        let events = RunEventWriter::create(state_dir, run_id)?;
 
         Ok(Self {
             path,
             writer: BufWriter::new(file),
+            events,
+            agent_program: None,
         })
     }
 
     pub fn record(&mut self, event: Event<'_>) -> Result<()> {
+        self.record_event_stream(&event)?;
         let envelope = EventEnvelope {
             ts_ms: unix_ms(),
             event,
@@ -330,6 +339,97 @@ impl TrajectoryWriter {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn event_path(&self) -> &Path {
+        self.events.path()
+    }
+
+    fn record_event_stream(&mut self, event: &Event<'_>) -> Result<()> {
+        match event {
+            Event::RunStarted {
+                run_id,
+                task,
+                area,
+                max_loops,
+                allowed,
+                avoid,
+                agent_program,
+                ..
+            } => {
+                self.agent_program = Some((*agent_program).to_owned());
+                self.events.append(&HarnessEvent::TaskStarted {
+                    run_id: (*run_id).to_owned(),
+                    task: (*task).to_owned(),
+                    area: (*area).to_owned(),
+                })?;
+                self.events.append(&HarnessEvent::ContractLoaded {
+                    allowed_scope: allowed.to_vec(),
+                    avoid_scope: avoid.to_vec(),
+                    max_loops: *max_loops,
+                })?;
+            }
+            Event::TaskRouted { routes } => {
+                self.events.append(&HarnessEvent::RouteSelected {
+                    routes: routes.to_vec(),
+                })?;
+            }
+            Event::InvariantsSelected { invariants } => {
+                self.events.append(&HarnessEvent::InvariantSelected {
+                    invariants: invariants.to_vec(),
+                })?;
+            }
+            Event::AttemptStarted { attempt } => {
+                self.events.append(&HarnessEvent::LoopStarted { attempt: *attempt })?;
+                self.events.append(&HarnessEvent::AgentStarted {
+                    agent: self
+                        .agent_program
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_owned()),
+                    attempt: *attempt,
+                })?;
+            }
+            Event::AgentFinished {
+                attempt,
+                success,
+                exit_code,
+                ..
+            } => {
+                self.events.append(&HarnessEvent::AgentFinished {
+                    success: *success,
+                    exit_code: *exit_code,
+                    attempt: *attempt,
+                })?;
+            }
+            Event::ScopeEvaluated { changed_paths, .. } => {
+                self.events.append(&HarnessEvent::DiffDetected {
+                    changed_files: changed_paths.to_vec(),
+                })?;
+            }
+            Event::CheckFinished { name, success, .. } => {
+                self.events.append(&HarnessEvent::VerificationStarted {
+                    check: (*name).to_owned(),
+                })?;
+                self.events.append(&HarnessEvent::VerificationFinished {
+                    check: (*name).to_owned(),
+                    success: *success,
+                })?;
+            }
+            Event::RunFinished {
+                success, attempts, ..
+            } => {
+                self.events.append(&HarnessEvent::TaskFinished {
+                    success: *success,
+                    attempts: *attempts,
+                })?;
+            }
+            Event::GitHeadChecked { .. }
+            | Event::InvariantImpactAssessed { .. }
+            | Event::RiskAssessed { .. }
+            | Event::FailureRecorded { .. }
+            | Event::AttemptFailed { .. } => {}
+        }
+        Ok(())
     }
 }
 
@@ -397,6 +497,113 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].run_id, "new");
         assert_eq!(candidates[0].diff_fingerprint, "fnv1a64:1234");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trajectory_records_runner_event_stream() {
+        let unique = unix_ms();
+        let root = std::env::temp_dir().join(format!(
+            "burncloud-harness-trajectory-events-{}-{unique}",
+            std::process::id()
+        ));
+        let allowed = vec!["src/**".to_owned()];
+        let avoid = vec!["Cargo.lock".to_owned()];
+        let routes = vec!["ui".to_owned()];
+        let invariants = vec!["no-regression".to_owned()];
+        let changed = vec!["src/main.rs".to_owned()];
+        let mut writer = TrajectoryWriter::create(&root, "run-1").unwrap();
+
+        writer
+            .record(Event::RunStarted {
+                run_id: "run-1",
+                task: "test-task",
+                goal: "test goal",
+                area: "ui",
+                max_loops: 3,
+                baseline_head: "abc",
+                allowed: &allowed,
+                avoid: &avoid,
+                context_files: &[],
+                agent_program: "codex",
+                agent_args: &[],
+                agent_append_prompt: true,
+                resumed_from: None,
+            })
+            .unwrap();
+        writer.record(Event::TaskRouted { routes: &routes }).unwrap();
+        writer
+            .record(Event::InvariantsSelected {
+                invariants: &invariants,
+            })
+            .unwrap();
+        writer.record(Event::AttemptStarted { attempt: 1 }).unwrap();
+        writer
+            .record(Event::AgentFinished {
+                attempt: 1,
+                success: true,
+                exit_code: Some(0),
+                stdout: "",
+                stderr: "",
+            })
+            .unwrap();
+        writer
+            .record(Event::ScopeEvaluated {
+                attempt: 1,
+                changed_paths: &changed,
+                violations: &[],
+                diff_fingerprint: "fnv1a64:test",
+            })
+            .unwrap();
+        writer
+            .record(Event::CheckFinished {
+                attempt: 1,
+                name: "cargo test",
+                command: "cargo test",
+                reason: "required",
+                success: true,
+                exit_code: Some(0),
+                stdout: "",
+                stderr: "",
+            })
+            .unwrap();
+        writer
+            .record(Event::RunFinished {
+                success: true,
+                attempts: 1,
+                changed_paths: &changed,
+            })
+            .unwrap();
+
+        let content = fs::read_to_string(root.join("runs/run-1/events.jsonl")).unwrap();
+        let types = content
+            .lines()
+            .map(|line| {
+                let value: Value = serde_json::from_str(line).unwrap();
+                value["event"]["type"].as_str().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            types,
+            vec![
+                "task_started",
+                "contract_loaded",
+                "route_selected",
+                "invariant_selected",
+                "loop_started",
+                "agent_started",
+                "agent_finished",
+                "diff_detected",
+                "verification_started",
+                "verification_finished",
+                "task_finished",
+            ]
+        );
+        assert_eq!(
+            content,
+            fs::read_to_string(root.join("runs/latest/events.jsonl")).unwrap()
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 }
