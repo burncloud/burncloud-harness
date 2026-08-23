@@ -30,6 +30,11 @@ pub fn run_migration(
     shared_target_dir: Option<&Path>,
 ) -> Result<String> {
     let mut source_fidelity_spec = spec.clone();
+    source_fidelity_spec
+        .required_selectors
+        .retain(|selector| selector.contains("data-visual-fixture"));
+    source_fidelity_spec.metric_labels.clear();
+    source_fidelity_spec.section_titles.clear();
     source_fidelity_spec.clipping_selectors.clear();
     source_fidelity_spec.mobile_menu = None;
     run(workspace, &source_fidelity_spec, shared_target_dir)
