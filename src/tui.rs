@@ -208,7 +208,14 @@ fn draw_task_summary(frame: &mut Frame, area: Rect, state: &RunState) {
     let lines = vec![
         kv("任务", &state.task),
         kv("运行", value_or(&state.run_id, "-")),
-        kv("进度", &format!("第 {} 轮 · {}", attempt_label(state), stage_zh(&state.stage))),
+        kv(
+            "进度",
+            &format!(
+                "第 {} 轮 · {}",
+                attempt_label(state),
+                stage_zh(&state.stage)
+            ),
+        ),
         kv("阶段耗时", &stage_elapsed),
         kv("总耗时", &total),
         kv("活动", &activity),
@@ -272,7 +279,10 @@ fn draw_boundaries(frame: &mut Frame, area: Rect, state: &RunState) {
     }
 
     let boundary = if state.violations.is_empty() {
-        Span::styled("边界状态  当前无越界修改", Style::default().fg(Color::DarkGray))
+        Span::styled(
+            "边界状态  当前无越界修改",
+            Style::default().fg(Color::DarkGray),
+        )
     } else {
         Span::styled(
             format!("边界状态  发现 {} 项越界", state.violations.len()),
@@ -341,7 +351,11 @@ fn draw_loop(frame: &mut Frame, area: Rect, state: &RunState) {
         let failure = state.failures.last().expect("failure list is not empty");
         lines.push(Line::from(vec![
             Span::styled(
-                format!("决策  #{} {}  ", failure.attempt, failure_class_zh(&failure.class)),
+                format!(
+                    "决策  #{} {}  ",
+                    failure.attempt,
+                    failure_class_zh(&failure.class)
+                ),
                 Style::default()
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
@@ -553,7 +567,11 @@ fn draw_checks(frame: &mut Frame, area: Rect, state: &RunState) {
         Span::styled(
             format!("失败 {failed}  "),
             Style::default()
-                .fg(if failed == 0 { Color::DarkGray } else { Color::Red })
+                .fg(if failed == 0 {
+                    Color::DarkGray
+                } else {
+                    Color::Red
+                })
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -689,7 +707,12 @@ fn preparation_elapsed_ms(state: &RunState, now: u64) -> Option<u64> {
 fn agent_activity_summary(state: &RunState, now: u64) -> String {
     let age = state
         .agent_last_output_ms
-        .map(|timestamp| format!("最后活动 {} 前", format_duration(now.saturating_sub(timestamp))))
+        .map(|timestamp| {
+            format!(
+                "最后活动 {} 前",
+                format_duration(now.saturating_sub(timestamp))
+            )
+        })
         .unwrap_or_else(|| "尚无活动".to_owned());
     let heartbeat = state
         .agent_heartbeat_elapsed_secs
