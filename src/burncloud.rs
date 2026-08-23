@@ -5,7 +5,11 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 
-use crate::{config::TaskSpec, invariants::InvariantSelection, route::RouteSelection};
+use crate::{
+    config::{BurncloudArea, TaskSpec},
+    invariants::InvariantSelection,
+    route::RouteSelection,
+};
 
 pub const REQUIRED_BOOTSTRAP_DOCS: &[&str] = &[
     "AGENTS.md",
@@ -89,7 +93,16 @@ impl BurncloudRepo {
             .map(|limit| format!("- Maximum changed files: {limit}"))
             .unwrap_or_else(|| "- Maximum changed files: not separately capped".to_owned());
         let time_budget = task.agent.time_budget_prompt_text();
-        let context_files = task.context_prompt_text();
+        let context_files = if matches!(task.area, BurncloudArea::Ui) {
+            ui_context_prompt_text(task)
+        } else {
+            task.context_prompt_text()
+        };
+        let convergence = if matches!(task.area, BurncloudArea::Ui) {
+            ui_convergence_prompt(task, attempt, previous_feedback)
+        } else {
+            String::new()
+        };
         let feedback = previous_feedback
             .map(|value| format!("\nPrevious harness feedback:\n{value}\n"))
             .unwrap_or_default();
@@ -139,7 +152,7 @@ Time-budget behavior:
 - The hard limit is enforced by burncloud-harness. Do not wait until the final minute to save or organize edits.
 - An idle warning means the harness has seen no agent output for the configured interval. Treat it as a signal to unblock or simplify the current approach.
 - If the hard limit ends the process, the existing worktree is preserved and the next Harness attempt will continue from the real diff. Do not intentionally restart from scratch on later attempts.
-
+{convergence}
 Hard rules for this run:
 - Understand current behavior from real BurnCloud source before changing it.
 - Start discovery from the selected TASK_ROUTER rows when they are relevant, then confirm ownership from current source.
@@ -168,6 +181,7 @@ Hard rules for this run:
             avoid = avoid,
             change_budget = change_budget,
             time_budget = time_budget,
+            convergence = convergence,
             feedback = feedback,
         )
     }
@@ -176,5 +190,150 @@ Hard rules for this run:
         let full = self.root.join(path);
         fs::read_to_string(&full)
             .with_context(|| format!("failed to read required BurnCloud file {}", full.display()))
+    }
+}
+
+fn ui_context_prompt_text(task: &TaskSpec) -> String {
+    if task.resolved_context_files.is_empty() {
+        return "- None declared".to_owned();
+    }
+
+    let mut primary = Vec::new();
+    let mut supporting = Vec::new();
+    for context in &task.resolved_context_files {
+        let line = format!(
+            "- {} -> {}",
+            context.declared_path,
+            context.absolute_path.display()
+        );
+        if is_primary_ui_context(&context.declared_path) {
+            primary.push(line);
+        } else {
+            supporting.push(line);
+        }
+    }
+
+    let primary = if primary.is_empty() {
+        "- None auto-classified; use the most task-specific source/page contract first".to_owned()
+    } else {
+        primary.join("\n")
+    };
+    let supporting = if supporting.is_empty() {
+        "- None".to_owned()
+    } else {
+        supporting.join("\n")
+    };
+
+    format!(
+        "PRIMARY — read before the first UI edit:\n{primary}\n\nSUPPORTING — consult only when an active parity gap requires it; do not serially reread all of these on every attempt:\n{supporting}"
+    )
+}
+
+fn is_primary_ui_context(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with("source-migration-fidelity.md")
+        || normalized.contains("/page-contracts/")
+        || normalized.ends_with("/design-system.md")
+        || normalized.ends_with("/information-architecture.md")
+        || normalized.contains("/src/pages/")
+        || normalized.ends_with("/src/components/Layout.tsx")
+}
+
+fn ui_convergence_prompt(task: &TaskSpec, attempt: u32, previous_feedback: Option<&str>) -> String {
+    let target_priority = ui_target_priority(task);
+    let mode = if attempt <= 1 && previous_feedback.is_none() {
+        r#"UI convergence mode: INITIAL SOURCE-FIDELITY PASS
+- Before editing, compare source and target once in this fixed order: shell -> role navigation -> page header/actions -> major section order -> metric geometry -> main table/list/card geometry -> spacing/typography -> i18n/responsive behavior.
+- Turn that comparison into a short internal delta list. Do not start by redesigning the page from memory.
+- Read PRIMARY UI context first. Open SUPPORTING context only when a concrete delta requires it.
+- Once source ownership and target ownership are known, stop broad repository search. Spend the remaining time implementing and verifying the delta list.
+- Work top-down so later spacing does not hide structural mismatches.
+- Preserve presentation geometry when runtime values are unavailable; truthful state changes values/content, not page identity.
+- Before reporting completion, repeat the same comparison order and explicitly report every remaining mismatch. A major required landmark mismatch means the task is not complete."#
+    } else {
+        r#"UI convergence mode: REVISION / DELTA-CLOSURE PASS
+- The current worktree is the baseline. FIRST inspect the existing Git diff and the previous Harness feedback before opening broad documentation.
+- Do not restart discovery, redesign the page, or replace already-correct structure.
+- Convert the previous feedback into a small ordered delta list. Every edit in this attempt must map to one of those deltas or to evidence directly required to verify it.
+- Re-read only the PRIMARY source/contract file needed for the active delta. SUPPORTING context is on-demand, not a checklist.
+- Prefer the smallest correction layer: spacing/visual mismatch -> local CSS/layout first; missing landmark -> page/component structure; truthful-state issue -> data/content wiring. Do not escalate layers without evidence.
+- Preserve all already-correct sections and behavior. Avoid touching unrelated files merely to make the page look uniformly rewritten.
+- Close one delta cluster at a time, then verify it before moving to the next.
+- Before reporting completion, compare only the rejected/failed areas plus their immediate layout dependencies against the source again. Report any residual mismatch instead of claiming completion."#
+    };
+
+    format!(
+        "\nBurnCloud UI convergence policy:\n{mode}\n\nPreferred target ownership for this task (start here before widening within the allowlist):\n{target_priority}\n"
+    )
+}
+
+fn ui_target_priority(task: &TaskSpec) -> String {
+    let mut primary = Vec::new();
+    let mut supporting = Vec::new();
+    for path in &task.scope.allowed {
+        if is_primary_ui_target(path) {
+            primary.push(format!("- {path}"));
+        } else {
+            supporting.push(format!("- {path}"));
+        }
+    }
+
+    if primary.is_empty() {
+        primary.push(
+            "- No target path auto-classified; inspect the narrowest page/layout/CSS owner first"
+                .to_owned(),
+        );
+    }
+    if supporting.is_empty() {
+        supporting.push("- None".to_owned());
+    }
+
+    format!(
+        "PRIMARY TARGETS:\n{}\nSUPPORTING TARGETS (only if the delta requires them):\n{}",
+        primary.join("\n"),
+        supporting.join("\n")
+    )
+}
+
+fn is_primary_ui_target(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.contains("/critical_pages/")
+        || normalized.ends_with("/functional_layout.rs")
+        || normalized.ends_with("/product_ui.css")
+        || normalized.ends_with("/app.rs")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_context_prioritizes_page_contract_source_page_and_layout() {
+        assert!(is_primary_ui_context(
+            "../../docs/ui/page-contracts/buyer-overview.md"
+        ));
+        assert!(is_primary_ui_context(
+            "../../../burncloud-ui/src/pages/buyer/BuyerOverview.tsx"
+        ));
+        assert!(is_primary_ui_context(
+            "../../../burncloud-ui/src/components/Layout.tsx"
+        ));
+        assert!(!is_primary_ui_context(
+            "../../../burncloud-ui/src/i18n/locales/ja.ts"
+        ));
+    }
+
+    #[test]
+    fn ui_target_priority_keeps_page_layout_and_css_in_the_fast_path() {
+        assert!(is_primary_ui_target(
+            "crates/client/src/critical_pages/dashboard.rs"
+        ));
+        assert!(is_primary_ui_target(
+            "crates/client/src/functional_layout.rs"
+        ));
+        assert!(is_primary_ui_target("crates/client/src/product_ui.css"));
+        assert!(!is_primary_ui_target(
+            "crates/tests/tests/e2e/console_pages.rs"
+        ));
     }
 }
