@@ -100,16 +100,41 @@ impl DaemonLease {
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let owner = fs::read_to_string(&path).unwrap_or_else(|_| "unknown".to_owned());
-                bail!(
-                    "another UI migration daemon owns {} (pid {})",
-                    path.display(),
-                    owner.trim()
-                )
+                let owner_pid = owner.trim().parse::<u32>().ok();
+                if owner_pid.is_some_and(process_is_alive) {
+                    bail!(
+                        "another UI migration daemon owns {} (pid {})",
+                        path.display(),
+                        owner.trim()
+                    );
+                }
+                fs::remove_file(&path).with_context(|| {
+                    format!("failed to recover stale daemon lease {}", path.display())
+                })?;
+                Self::acquire(state_dir)
             }
             Err(error) => {
                 Err(error).with_context(|| format!("failed to acquire {}", path.display()))
             }
         }
+    }
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let filter = format!("PID eq {pid}");
+        return std::process::Command::new("tasklist")
+            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+            });
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(format!("/proc/{pid}")).exists()
     }
 }
 
