@@ -27,9 +27,14 @@ pub struct RunState {
     pub stage: String,
     pub status: String,
     pub attempt: u32,
+    pub max_loops: u32,
+    pub allowed: Vec<String>,
+    pub avoid: Vec<String>,
+    pub routes: Vec<String>,
     pub changed_files: Vec<String>,
     pub violations: Vec<String>,
     pub invariants: Vec<String>,
+    pub newly_required: Vec<String>,
     pub risk_findings: Vec<String>,
     pub checks: Vec<CheckState>,
     pub failures: Vec<FailureState>,
@@ -45,9 +50,14 @@ impl Default for RunState {
             stage: "TASK".to_owned(),
             status: "TASK".to_owned(),
             attempt: 0,
+            max_loops: 0,
+            allowed: Vec::new(),
+            avoid: Vec::new(),
+            routes: Vec::new(),
             changed_files: Vec::new(),
             violations: Vec::new(),
             invariants: Vec::new(),
+            newly_required: Vec::new(),
             risk_findings: Vec::new(),
             checks: Vec::new(),
             failures: Vec::new(),
@@ -75,6 +85,9 @@ impl RunState {
         if let Some(attempt) = u32_field(payload, "attempt") {
             self.attempt = attempt;
         }
+        if let Some(max_loops) = u32_field(payload, "max_loops") {
+            self.max_loops = max_loops;
+        }
 
         if matches!(name, "task_finished" | "run_finished") {
             if let Some(success) = payload.get("success").and_then(Value::as_bool) {
@@ -87,11 +100,31 @@ impl RunState {
         }
 
         match name {
+            "contract_loaded" => {
+                self.allowed = string_array(payload, "allowed_scope").unwrap_or_default();
+                self.avoid = string_array(payload, "avoid_scope").unwrap_or_default();
+            }
+            "run_started" => {
+                self.allowed = string_array(payload, "allowed").unwrap_or_default();
+                self.avoid = string_array(payload, "avoid").unwrap_or_default();
+            }
+            "route_selected" | "task_routed" => {
+                self.routes = string_array(payload, "routes").unwrap_or_default();
+            }
+            "loop_started" | "attempt_started" => {
+                self.newly_required.clear();
+                self.violations.clear();
+                self.risk_findings.clear();
+                self.checks.clear();
+            }
             "invariant_selected" | "invariants_selected" => {
                 self.invariants = string_array(payload, "invariants").unwrap_or_default();
+                self.newly_required.clear();
             }
             "invariant_expanded" => {
-                for invariant in string_array(payload, "invariants").unwrap_or_default() {
+                let expanded = string_array(payload, "invariants").unwrap_or_default();
+                self.newly_required = expanded.clone();
+                for invariant in expanded {
                     if !self.invariants.contains(&invariant) {
                         self.invariants.push(invariant);
                     }
@@ -190,15 +223,12 @@ fn stage_for(event: &str) -> &'static str {
     match event {
         "task_started" | "contract_loaded" | "run_started" => "TASK",
         "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
-        "loop_started" | "agent_started" | "agent_finished" | "attempt_started"
-        | "attempt_failed" | "retry_requested" | "failure_recorded" => "AGENT",
-        "diff_detected"
-        | "git_head_checked"
-        | "scope_evaluated"
-        | "invariant_impact_assessed"
-        | "invariant_expanded" => "SCOPE",
+        "loop_started" | "agent_started" | "agent_finished" | "attempt_started" => "AGENT",
+        "diff_detected" | "git_head_checked" | "scope_evaluated" => "SCOPE",
+        "invariant_impact_assessed" | "invariant_expanded" => "INVARIANTS",
         "risk_assessed" | "risk_detected" => "RISK",
         "verification_started" | "verification_finished" | "check_finished" => "VERIFY",
+        "attempt_failed" | "retry_requested" | "failure_recorded" => "FEEDBACK",
         _ => "TASK",
     }
 }
@@ -271,13 +301,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn reducer_tracks_decisions_checks_and_final_status() {
+    fn reducer_tracks_contract_decisions_checks_and_final_status() {
         let mut state = RunState::default();
         state.apply(&json!({
             "type": "task_started",
             "run_id": "run-1",
             "task": "buyer-overview",
             "area": "ui"
+        }));
+        state.apply(&json!({
+            "type": "contract_loaded",
+            "allowed_scope": ["crates/client/**"],
+            "avoid_scope": ["crates/server/**"],
+            "max_loops": 4
+        }));
+        state.apply(&json!({
+            "type": "route_selected",
+            "routes": ["buyer-overview", "shared-layout"]
         }));
         state.apply(&json!({
             "type": "diff_detected",
@@ -309,13 +349,30 @@ mod tests {
 
         assert_eq!(state.run_id, "run-1");
         assert_eq!(state.task, "buyer-overview");
+        assert_eq!(state.max_loops, 4);
+        assert_eq!(state.allowed, vec!["crates/client/**"]);
+        assert_eq!(state.avoid, vec!["crates/server/**"]);
+        assert_eq!(state.routes.len(), 2);
         assert_eq!(state.changed_files, vec!["src/main.rs"]);
         assert_eq!(state.risk_findings, vec!["review required"]);
         assert_eq!(state.failures.len(), 1);
         assert_eq!(state.checks[0].success, Some(true));
         assert_eq!(state.status, "PASSED");
         assert_eq!(state.stage, "DONE");
-        assert_eq!(state.timeline.len(), 6);
+        assert_eq!(state.timeline.len(), 8);
+    }
+
+    #[test]
+    fn reducer_marks_retry_as_feedback_stage() {
+        let mut state = RunState::default();
+        state.apply(&json!({
+            "type": "retry_requested",
+            "attempt": 2,
+            "reason": "verification failed"
+        }));
+
+        assert_eq!(state.stage, "FEEDBACK");
+        assert_eq!(state.failures[0].detail, "verification failed");
     }
 
     #[test]
@@ -325,7 +382,10 @@ mod tests {
             "type": "run_started",
             "run_id": "legacy",
             "task": "legacy-task",
-            "area": "api"
+            "area": "api",
+            "max_loops": 3,
+            "allowed": ["src/**"],
+            "avoid": ["target/**"]
         }));
         state.apply(&json!({
             "type": "scope_evaluated",
@@ -341,6 +401,8 @@ mod tests {
         }));
 
         assert_eq!(state.changed_files, vec!["src/lib.rs"]);
+        assert_eq!(state.allowed, vec!["src/**"]);
+        assert_eq!(state.max_loops, 3);
         assert_eq!(state.checks[0].name, "cargo test");
         assert_eq!(state.checks[0].success, Some(false));
         assert_eq!(state.stage, "VERIFY");
