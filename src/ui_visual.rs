@@ -57,6 +57,12 @@ pub fn run(
         )
     })?;
 
+    let report_path = output_dir.join("report.json");
+    let previous_pixel_match = fs::read(&report_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|report| report.get("pixel_match").cloned());
+
     let port = reserve_port()?;
     let mut server = BurncloudServer::start(workspace, &output_dir, port, shared_target_dir)?;
     server.wait_until_healthy(Duration::from_secs(600))?;
@@ -80,7 +86,12 @@ pub fn run(
     let desktop = inspect_desktop(&browser, &base_url, spec, &output_dir, &mut failures)?;
     let mobile = inspect_mobile(&browser, &base_url, spec, &output_dir, &mut failures)?;
     capture_reference(&browser, spec, &output_dir, &mut warnings);
-    let pixel_match = inspect_pixel_match(spec, &output_dir, &mut failures)?;
+    let pixel_match = inspect_pixel_match(
+        spec,
+        &output_dir,
+        previous_pixel_match.as_ref(),
+        &mut failures,
+    )?;
 
     let report = json!({
         "engine": "rust/headless_chrome",
@@ -95,7 +106,6 @@ pub fn run(
         "warnings": warnings,
         "failures": failures,
     });
-    let report_path = output_dir.join("report.json");
     fs::write(&report_path, serde_json::to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write {}", report_path.display()))?;
 
@@ -443,6 +453,7 @@ fn capture_reference(
 fn inspect_pixel_match(
     spec: &UiVisualSpec,
     output_dir: &Path,
+    previous: Option<&Value>,
     failures: &mut Vec<String>,
 ) -> Result<Value> {
     let Some(config) = &spec.pixel_match else {
@@ -485,16 +496,18 @@ fn inspect_pixel_match(
         let changed_ratio = metrics["changed_pixel_ratio"].as_f64().unwrap_or(1.0);
         let mean_delta = metrics["mean_channel_delta"].as_f64().unwrap_or(255.0);
         let worst_regions = worst_region_summary(&metrics, 3);
+        let trend = pixel_trend_summary(previous.and_then(|value| value.get(name)), &metrics, 3);
         if changed_ratio > config.max_changed_pixel_ratio
             || mean_delta > config.max_mean_channel_delta
         {
             failures.push(format!(
-                "{name} pixel mismatch: changed ratio {:.8} (max {:.8}), mean channel delta {:.6} (max {:.6}); worst regions: {}; diff {}",
+                "{name} pixel mismatch: changed ratio {:.8} (max {:.8}), mean channel delta {:.6} (max {:.6}); worst regions: {}; trend: {}; diff {}",
                 changed_ratio,
                 config.max_changed_pixel_ratio,
                 mean_delta,
                 config.max_mean_channel_delta,
                 worst_regions,
+                trend,
                 output_dir.join(diff_name).display()
             ));
         }
@@ -692,6 +705,41 @@ fn worst_region_summary(metrics: &Value, limit: usize) -> String {
         .map(|(name, ratio, mean)| format!("{name}={ratio:.6}/{mean:.3}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn pixel_trend_summary(previous: Option<&Value>, current: &Value, limit: usize) -> String {
+    let Some(previous) = previous else {
+        return "no previous capture".to_owned();
+    };
+    let current_ratio = current["changed_pixel_ratio"].as_f64().unwrap_or(1.0);
+    let previous_ratio = previous["changed_pixel_ratio"].as_f64().unwrap_or(1.0);
+    let mut region_deltas = current["regions"]
+        .as_object()
+        .into_iter()
+        .flat_map(|regions| regions.iter())
+        .filter_map(|(name, metrics)| {
+            let current = metrics["changed_pixel_ratio"].as_f64()?;
+            let previous = previous["regions"][name]["changed_pixel_ratio"].as_f64()?;
+            Some((name.as_str(), current - previous))
+        })
+        .collect::<Vec<_>>();
+    region_deltas
+        .sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    let regressions = region_deltas
+        .into_iter()
+        .filter(|(_, delta)| *delta > 0.0)
+        .take(limit)
+        .map(|(name, delta)| format!("{name}=+{delta:.6}"))
+        .collect::<Vec<_>>();
+    format!(
+        "overall={:+.6}; regressions={}",
+        current_ratio - previous_ratio,
+        if regressions.is_empty() {
+            "none".to_owned()
+        } else {
+            regressions.join(", ")
+        }
+    )
 }
 
 fn set_viewport(tab: &headless_chrome::Tab, width: u32, height: u32) -> Result<()> {
@@ -971,6 +1019,7 @@ mod tests {
         assert_eq!(metrics["changed_pixel_ratio"], 0.5);
         assert_eq!(metrics["regions"]["sidebar"]["changed_pixel_ratio"], 0.5);
         assert!(worst_region_summary(&metrics, 1).starts_with("sidebar=0.500000/"));
+        assert!(pixel_trend_summary(Some(&identical), &metrics, 1).contains("overall=+0.500000"));
         fs::remove_dir_all(root).unwrap();
     }
 }
