@@ -270,7 +270,7 @@ fn ui_convergence_prompt(task: &TaskSpec, attempt: u32, previous_feedback: Optio
 - Do not restart discovery, redesign the page, or replace already-correct structure.
 - Convert the previous feedback into a small ordered delta list. Every edit in this attempt must map to one of those deltas or to evidence directly required to verify it.
 - Re-read only the PRIMARY source/contract file needed for the active delta. SUPPORTING context is on-demand, not a checklist.
-- Prefer the smallest correction layer: spacing/visual mismatch -> local CSS/layout first; missing landmark -> page/component structure; truthful-state issue -> data/content wiring. Do not escalate layers without evidence.
+- Prefer the smallest correction layer that can actually satisfy the contract. For pinned-source pixel parity, compare the source node hierarchy and exact utility class list first; reuse those classes through the pinned source stylesheet instead of approximating source geometry with target-only semantic CSS. Use local CSS only for Dioxus state wiring or behavior the source classes cannot express. For non-pixel tasks: spacing/visual mismatch -> local CSS/layout; missing landmark -> page/component structure; truthful-state issue -> data/content wiring.
 - Preserve all already-correct sections and behavior. Avoid touching unrelated files merely to make the page look uniformly rewritten.
 - Close one delta cluster at a time, then verify it before moving to the next.
 - Before reporting completion, compare only the rejected/failed areas plus their immediate layout dependencies against the source again. Report any residual mismatch instead of claiming completion."#
