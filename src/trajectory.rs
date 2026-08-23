@@ -9,10 +9,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{
-    event_writer::RunEventWriter,
-    events::HarnessEvent,
-};
+use crate::{event_writer::RunEventWriter, events::HarnessEvent};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -380,7 +377,8 @@ impl TrajectoryWriter {
                 })?;
             }
             Event::AttemptStarted { attempt } => {
-                self.events.append(&HarnessEvent::LoopStarted { attempt: *attempt })?;
+                self.events
+                    .append(&HarnessEvent::LoopStarted { attempt: *attempt })?;
                 self.events.append(&HarnessEvent::AgentStarted {
                     agent: self
                         .agent_program
@@ -531,7 +529,9 @@ mod tests {
                 resumed_from: None,
             })
             .unwrap();
-        writer.record(Event::TaskRouted { routes: &routes }).unwrap();
+        writer
+            .record(Event::TaskRouted { routes: &routes })
+            .unwrap();
         writer
             .record(Event::InvariantsSelected {
                 invariants: &invariants,
