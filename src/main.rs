@@ -14,6 +14,7 @@ mod risk;
 mod route;
 mod runner;
 mod trajectory;
+mod tui;
 
 use std::path::PathBuf;
 
@@ -31,6 +32,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    Tui,
     Doctor {
         #[arg(default_value = ".")]
         workspace: PathBuf,
@@ -69,6 +71,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Tui => tui::run()?,
         Commands::Doctor { workspace } => {
             let workspace = workspace.canonicalize()?;
             burncloud::BurncloudRepo::open(workspace.as_path())?;
@@ -114,7 +117,6 @@ fn explain_task(task: TaskSpec) -> Result<()> {
     let workspace = PathBuf::from(task.workspace.as_str()).canonicalize()?;
     let burncloud = burncloud::BurncloudRepo::open(workspace.as_path())?;
     git::GitRepo::new(burncloud.root()).ensure_repository()?;
-
     let routes = route::resolve(burncloud.root(), &task.goal, task.area)?;
     let selected_invariants =
         invariants::resolve(burncloud.root(), task.area, &task.goal, &routes)?;
