@@ -1,3 +1,4 @@
+mod agent_activity;
 mod analysis;
 mod burncloud;
 mod checks;
