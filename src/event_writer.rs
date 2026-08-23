@@ -115,7 +115,10 @@ impl RunEventWriter {
         let runs_dir = state_dir.join("runs");
         let run_events = runs_dir.join(run_id).join("events.jsonl");
         if !run_events.is_file() {
-            bail!("Harness event stream does not exist: {}", run_events.display());
+            bail!(
+                "Harness event stream does not exist: {}",
+                run_events.display()
+            );
         }
         let latest_run = fs::read_to_string(runs_dir.join("latest/run_id"))
             .unwrap_or_default()
