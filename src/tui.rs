@@ -194,7 +194,11 @@ fn draw_task(frame: &mut Frame, area: Rect, state: &RunState) {
             .map(|activity| {
                 format!(
                     "智能体{} · {}",
-                    if activity.stream == "stderr" { "错误" } else { "输出" },
+                    if activity.stream == "stderr" {
+                        "错误"
+                    } else {
+                        "输出"
+                    },
                     compact(&activity.line, 72)
                 )
             })
