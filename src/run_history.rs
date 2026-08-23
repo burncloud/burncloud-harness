@@ -209,7 +209,10 @@ fn stage_for(event: &str) -> &'static str {
         "route_selected" | "invariant_selected" | "task_routed" | "invariants_selected" => "ROUTE",
         "loop_started" | "agent_started" | "agent_finished" | "attempt_started"
         | "attempt_failed" | "retry_requested" | "failure_recorded" => "AGENT",
-        "diff_detected" | "git_head_checked" | "scope_evaluated" | "invariant_impact_assessed"
+        "diff_detected"
+        | "git_head_checked"
+        | "scope_evaluated"
+        | "invariant_impact_assessed"
         | "invariant_expanded" => "SCOPE",
         "risk_assessed" | "risk_detected" => "RISK",
         "verification_started" | "verification_finished" | "check_finished" => "VERIFY",
@@ -348,7 +351,9 @@ mod tests {
             source: RunSource::EventStream,
         })
         .unwrap_err();
-        assert!(error.to_string().contains("unsupported Harness event schema"));
+        assert!(error
+            .to_string()
+            .contains("unsupported Harness event schema"));
         fs::remove_dir_all(state).unwrap();
     }
 
