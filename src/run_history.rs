@@ -116,6 +116,8 @@ pub fn resolve(state_dir: &Path, requested_run: Option<&str>) -> Result<RunArtif
 pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
     let content = fs::read_to_string(&artifact.path)
         .with_context(|| format!("failed to read run {}", artifact.path.display()))?;
+    let complete_file = content.ends_with('\n');
+    let line_count = content.lines().count();
     let mut task = "unknown".to_owned();
     let mut stage = "TASK".to_owned();
     let mut final_status = None;
@@ -126,13 +128,19 @@ pub fn load(artifact: &RunArtifact) -> Result<RunReplay> {
         if line.trim().is_empty() {
             continue;
         }
-        let value: Value = serde_json::from_str(line).with_context(|| {
-            format!(
-                "invalid JSONL in {} at line {}",
-                artifact.path.display(),
-                index + 1
-            )
-        })?;
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) if !complete_file && index + 1 == line_count => break,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "invalid JSONL in {} at line {}",
+                        artifact.path.display(),
+                        index + 1
+                    )
+                });
+            }
+        };
 
         if artifact.source == RunSource::EventStream {
             validate_event_record(&value, &artifact.path, index + 1, &mut previous_sequence)?;
@@ -331,6 +339,32 @@ mod tests {
         assert_eq!(replay.task, "buyer-overview");
         assert_eq!(replay.status, "PASSED");
         assert_eq!(replay.events[1].detail, "scope expanded");
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn ignores_partial_last_event_while_tailing() {
+        let state = temp_state("partial-tail");
+        let path = state.join("events.jsonl");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema_version\":1,\"sequence\":1,\"timestamp_ms\":1,\"event\":{\"type\":\"task_started\",\"run_id\":\"200\",\"task\":\"live-task\",\"area\":\"ui\"}}\n",
+                "{\"schema_version\":1,\"sequence\":2,\"timestamp_ms\":2,\"event\":{\"type\":\"risk_detected\""
+            ),
+        )
+        .unwrap();
+
+        let replay = load(&RunArtifact {
+            run_id: "200".to_owned(),
+            path,
+            source: RunSource::EventStream,
+        })
+        .unwrap();
+        assert_eq!(replay.task, "live-task");
+        assert_eq!(replay.events.len(), 1);
+        assert_eq!(replay.events[0].name, "task_started");
         fs::remove_dir_all(state).unwrap();
     }
 
