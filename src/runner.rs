@@ -969,6 +969,7 @@ fn latest_visual_evidence(workspace: &std::path::Path, task: &TaskSpec) -> Optio
     serde_json::to_string_pretty(&serde_json::json!({
         "report_path": report_path,
         "pixel_match": report.get("pixel_match"),
+        "landmark_comparison": report.get("landmark_comparison"),
         "failures": report.get("failures"),
     }))
     .ok()

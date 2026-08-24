@@ -89,6 +89,7 @@ pub fn run(
     let desktop = inspect_desktop(&browser, &base_url, spec, &output_dir, &mut failures)?;
     let mobile = inspect_mobile(&browser, &base_url, spec, &output_dir, &mut failures)?;
     capture_reference(&browser, spec, &output_dir, &mut warnings);
+    let landmark_comparison = compare_reference_landmarks(&output_dir, &desktop, &mobile);
     let pixel_match = inspect_pixel_match(
         spec,
         &output_dir,
@@ -105,6 +106,7 @@ pub fn run(
         "output_dir": output_dir,
         "desktop": desktop,
         "mobile": mobile,
+        "landmark_comparison": landmark_comparison,
         "pixel_match": pixel_match,
         "warnings": warnings,
         "failures": failures,
@@ -166,6 +168,8 @@ fn inspect_desktop(
             }})()"#
         ),
     )?;
+
+    evidence["landmarks"] = inspect_landmarks(&tab)?;
 
     let missing = string_array(&evidence, "missingSelectors");
     if !missing.is_empty() {
@@ -297,6 +301,7 @@ fn inspect_mobile(
             }})()"#
         ),
     )?;
+    evidence["landmarks"] = inspect_landmarks(&tab)?;
 
     if evidence["scrollWidth"].as_u64() > evidence["clientWidth"].as_u64() {
         failures.push(format!(
@@ -350,6 +355,67 @@ fn inspect_mobile(
     }
 
     Ok(evidence)
+}
+
+fn inspect_landmarks(tab: &headless_chrome::Tab) -> Result<Value> {
+    evaluate_json(
+        tab,
+        r#"(() => {
+            const exactText = (selector, text) => [...document.querySelectorAll(selector)]
+                .find((node) => node.textContent.trim() === text) || null;
+            const roundedAncestor = (node) => {
+                while (node && node !== document.body) {
+                    const classes = node.getAttribute?.('class') || '';
+                    if (classes.includes('rounded-2xl')) return node;
+                    node = node.parentElement;
+                }
+                return null;
+            };
+            const sample = (node) => {
+                if (!node) return null;
+                const rect = node.getBoundingClientRect();
+                const style = getComputedStyle(node);
+                const number = (value) => Math.round(value * 1000) / 1000;
+                return {
+                    tag: node.tagName.toLowerCase(),
+                    x: number(rect.x), y: number(rect.y),
+                    width: number(rect.width), height: number(rect.height),
+                    display: style.display,
+                    fontFamily: style.fontFamily,
+                    fontSize: style.fontSize,
+                    fontWeight: style.fontWeight,
+                    lineHeight: style.lineHeight,
+                    letterSpacing: style.letterSpacing,
+                    color: style.color,
+                    backgroundColor: style.backgroundColor,
+                    borderColor: style.borderColor,
+                    borderRadius: style.borderRadius,
+                    padding: style.padding,
+                    gap: style.gap,
+                };
+            };
+            const searchInput = document.querySelector('input[placeholder^="Search"]');
+            const title = exactText('h1', 'Developer Overview');
+            const conclusionText = exactText('span,div', 'All active model routes operating normally with cryptographic hardware verification.');
+            const todayLabel = exactText('span,div', 'TODAY SPEND');
+            const modelsTitle = exactText('h2,h3', 'Models in Use');
+            const activityTitle = exactText('h2,h3', 'Recent Activity');
+            const playground = exactText('span,a', 'Open Live Playground');
+            return {
+                sidebar: sample(document.querySelector('aside')),
+                topbar: sample(document.querySelector('header')),
+                search: sample(searchInput?.parentElement),
+                title: sample(title),
+                subtitle: sample(exactText('p', 'Monitor token expenditure, balance escrow health, active model routes, and real-time P95 latencies.')),
+                playgroundAction: sample(playground?.closest('a,button')),
+                conclusion: sample(conclusionText?.parentElement),
+                todayCard: sample(roundedAncestor(todayLabel)),
+                todayValue: sample(exactText('span,strong,div', '$14.28')),
+                modelsCard: sample(roundedAncestor(modelsTitle)),
+                activityCard: sample(roundedAncestor(activityTitle)),
+            };
+        })()"#,
+    )
 }
 
 fn inspect_oversized_svg(
@@ -436,26 +502,37 @@ fn capture_reference(
         return;
     };
     let targets = [
-        ("reference-desktop.png", DESKTOP_WIDTH, DESKTOP_HEIGHT),
-        ("reference-mobile.png", MOBILE_WIDTH, MOBILE_HEIGHT),
+        (
+            "reference-desktop.png",
+            "reference-layout-desktop.json",
+            DESKTOP_WIDTH,
+            DESKTOP_HEIGHT,
+        ),
+        (
+            "reference-mobile.png",
+            "reference-layout-mobile.json",
+            MOBILE_WIDTH,
+            MOBILE_HEIGHT,
+        ),
     ];
     let cache_key_path = output_dir.join("reference-url.txt");
     let cache_matches =
         fs::read_to_string(&cache_key_path).is_ok_and(|cached| cached.trim() == reference_url);
     if cache_matches
-        && targets
-            .iter()
-            .all(|(name, _, _)| output_dir.join(name).is_file())
+        && targets.iter().all(|(image, layout, _, _)| {
+            output_dir.join(image).is_file() && output_dir.join(layout).is_file()
+        })
     {
         return;
     }
-    for (name, _, _) in targets {
-        let _ = fs::remove_file(output_dir.join(name));
+    for (image, layout, _, _) in targets {
+        let _ = fs::remove_file(output_dir.join(image));
+        let _ = fs::remove_file(output_dir.join(layout));
     }
     let _ = fs::remove_file(&cache_key_path);
 
     let mut captured_all = true;
-    for (name, width, height) in targets {
+    for (image, layout, width, height) in targets {
         let result = (|| -> Result<()> {
             let tab = browser.new_tab()?;
             tab.set_default_timeout(Duration::from_secs(15));
@@ -469,11 +546,17 @@ fn capture_reference(
             tab.navigate_to(reference_url)?;
             let _ = tab.wait_until_navigated();
             stabilize_page(&tab)?;
-            screenshot(&tab, &output_dir.join(name))
+            screenshot(&tab, &output_dir.join(image))?;
+            let landmarks = inspect_landmarks(&tab)?;
+            fs::write(
+                output_dir.join(layout),
+                serde_json::to_vec_pretty(&landmarks)?,
+            )?;
+            Ok(())
         })();
         if let Err(error) = result {
             captured_all = false;
-            warnings.push(format!("reference capture {name} failed: {error:#}"));
+            warnings.push(format!("reference capture {image} failed: {error:#}"));
         }
     }
     if captured_all {
@@ -481,6 +564,72 @@ fn capture_reference(
             warnings.push(format!("reference cache key write failed: {error:#}"));
         }
     }
+}
+
+fn compare_reference_landmarks(output_dir: &Path, desktop: &Value, mobile: &Value) -> Value {
+    let read_reference = |name: &str| {
+        fs::read(output_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or(Value::Null)
+    };
+    json!({
+        "desktop": landmark_differences(
+            &read_reference("reference-layout-desktop.json"),
+            &desktop["landmarks"],
+        ),
+        "mobile": landmark_differences(
+            &read_reference("reference-layout-mobile.json"),
+            &mobile["landmarks"],
+        ),
+    })
+}
+
+fn landmark_differences(reference: &Value, local: &Value) -> Value {
+    let mut landmarks = serde_json::Map::new();
+    let Some(reference_landmarks) = reference.as_object() else {
+        return Value::Null;
+    };
+    for (landmark, expected) in reference_landmarks {
+        let actual = &local[landmark];
+        if expected.is_null() && actual.is_null() {
+            continue;
+        }
+        let mut properties = serde_json::Map::new();
+        let Some(expected_properties) = expected.as_object() else {
+            properties.insert("reference".to_owned(), expected.clone());
+            properties.insert("local".to_owned(), actual.clone());
+            landmarks.insert(landmark.clone(), Value::Object(properties));
+            continue;
+        };
+        for (property, expected_value) in expected_properties {
+            let actual_value = &actual[property];
+            if let (Some(expected_number), Some(actual_number)) =
+                (expected_value.as_f64(), actual_value.as_f64())
+            {
+                let delta = actual_number - expected_number;
+                if delta.abs() > 0.01 {
+                    properties.insert(
+                        property.clone(),
+                        json!({
+                            "reference": expected_number,
+                            "local": actual_number,
+                            "delta": (delta * 1000.0).round() / 1000.0,
+                        }),
+                    );
+                }
+            } else if expected_value != actual_value {
+                properties.insert(
+                    property.clone(),
+                    json!({"reference": expected_value, "local": actual_value}),
+                );
+            }
+        }
+        if !properties.is_empty() {
+            landmarks.insert(landmark.clone(), Value::Object(properties));
+        }
+    }
+    Value::Object(landmarks)
 }
 
 fn inspect_pixel_match(
@@ -1020,6 +1169,21 @@ mod tests {
         let mut failures = Vec::new();
         compare_strings("metrics", &[], &["anything".to_owned()], &mut failures);
         assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn landmark_comparison_reports_geometry_and_style_deltas() {
+        let reference = json!({
+            "title": {"x": 262.0, "fontWeight": "700", "color": "rgb(3, 7, 18)"}
+        });
+        let local = json!({
+            "title": {"x": 263.5, "fontWeight": "600", "color": "rgb(3, 7, 18)"}
+        });
+
+        let differences = landmark_differences(&reference, &local);
+        assert_eq!(differences["title"]["x"]["delta"], 1.5);
+        assert_eq!(differences["title"]["fontWeight"]["reference"], "700");
+        assert!(differences["title"].get("color").is_none());
     }
 
     #[test]
