@@ -371,6 +371,17 @@ fn inspect_landmarks(tab: &headless_chrome::Tab) -> Result<Value> {
                 }
                 return null;
             };
+            const colorCanvas = document.createElement('canvas');
+            colorCanvas.width = 1;
+            colorCanvas.height = 1;
+            const colorContext = colorCanvas.getContext('2d', {willReadFrequently: true});
+            const colorPixel = (value) => {
+                colorContext.clearRect(0, 0, 1, 1);
+                colorContext.fillStyle = 'rgba(0, 0, 0, 0)';
+                colorContext.fillStyle = value;
+                colorContext.fillRect(0, 0, 1, 1);
+                return [...colorContext.getImageData(0, 0, 1, 1).data];
+            };
             const sample = (node) => {
                 if (!node) return null;
                 const rect = node.getBoundingClientRect();
@@ -386,9 +397,12 @@ fn inspect_landmarks(tab: &headless_chrome::Tab) -> Result<Value> {
                     fontWeight: style.fontWeight,
                     lineHeight: style.lineHeight,
                     letterSpacing: style.letterSpacing,
-                    color: style.color,
-                    backgroundColor: style.backgroundColor,
-                    borderColor: style.borderColor,
+                    color: colorPixel(style.color),
+                    backgroundColor: colorPixel(style.backgroundColor),
+                    borderTopColor: colorPixel(style.borderTopColor),
+                    borderRightColor: colorPixel(style.borderRightColor),
+                    borderBottomColor: colorPixel(style.borderBottomColor),
+                    borderLeftColor: colorPixel(style.borderLeftColor),
                     borderRadius: style.borderRadius,
                     padding: style.padding,
                     gap: style.gap,
@@ -516,8 +530,9 @@ fn capture_reference(
         ),
     ];
     let cache_key_path = output_dir.join("reference-url.txt");
+    let cache_identity = format!("{reference_url}\ncomputed-landmarks-v2");
     let cache_matches =
-        fs::read_to_string(&cache_key_path).is_ok_and(|cached| cached.trim() == reference_url);
+        fs::read_to_string(&cache_key_path).is_ok_and(|cached| cached == cache_identity);
     if cache_matches
         && targets.iter().all(|(image, layout, _, _)| {
             output_dir.join(image).is_file() && output_dir.join(layout).is_file()
@@ -560,7 +575,7 @@ fn capture_reference(
         }
     }
     if captured_all {
-        if let Err(error) = fs::write(&cache_key_path, reference_url) {
+        if let Err(error) = fs::write(&cache_key_path, cache_identity) {
             warnings.push(format!("reference cache key write failed: {error:#}"));
         }
     }
