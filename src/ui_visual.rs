@@ -366,7 +366,7 @@ fn inspect_landmarks(tab: &headless_chrome::Tab) -> Result<Value> {
             const roundedAncestor = (node) => {
                 while (node && node !== document.body) {
                     const classes = node.getAttribute?.('class') || '';
-                    if (classes.includes('rounded-2xl')) return node;
+                    if (classes.includes('rounded-xl') || classes.includes('rounded-2xl')) return node;
                     node = node.parentElement;
                 }
                 return null;
@@ -387,6 +387,16 @@ fn inspect_landmarks(tab: &headless_chrome::Tab) -> Result<Value> {
                 const rect = node.getBoundingClientRect();
                 const style = getComputedStyle(node);
                 const number = (value) => Math.round(value * 1000) / 1000;
+                const border = (side) => {
+                    const width = style[`border${side}Width`];
+                    const borderStyle = style[`border${side}Style`];
+                    if (borderStyle === 'none' || Number.parseFloat(width) === 0) return null;
+                    return {
+                        width,
+                        style: borderStyle,
+                        color: colorPixel(style[`border${side}Color`]),
+                    };
+                };
                 return {
                     tag: node.tagName.toLowerCase(),
                     x: number(rect.x), y: number(rect.y),
@@ -399,10 +409,10 @@ fn inspect_landmarks(tab: &headless_chrome::Tab) -> Result<Value> {
                     letterSpacing: style.letterSpacing,
                     color: colorPixel(style.color),
                     backgroundColor: colorPixel(style.backgroundColor),
-                    borderTopColor: colorPixel(style.borderTopColor),
-                    borderRightColor: colorPixel(style.borderRightColor),
-                    borderBottomColor: colorPixel(style.borderBottomColor),
-                    borderLeftColor: colorPixel(style.borderLeftColor),
+                    borderTop: border('Top'),
+                    borderRight: border('Right'),
+                    borderBottom: border('Bottom'),
+                    borderLeft: border('Left'),
                     borderRadius: style.borderRadius,
                     padding: style.padding,
                     gap: style.gap,
@@ -530,7 +540,7 @@ fn capture_reference(
         ),
     ];
     let cache_key_path = output_dir.join("reference-url.txt");
-    let cache_identity = format!("{reference_url}\ncomputed-landmarks-v2");
+    let cache_identity = format!("{reference_url}\ncomputed-landmarks-v3");
     let cache_matches =
         fs::read_to_string(&cache_key_path).is_ok_and(|cached| cached == cache_identity);
     if cache_matches
