@@ -138,6 +138,13 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         invariants: initial_invariant_ids.clone(),
     })?;
 
+    if strict_visual
+        && resume_provenance.is_some()
+        && !visual_report_has_landmarks(&workspace, &task)
+    {
+        recapture_migration_visual(&workspace, &task);
+    }
+
     let mut previous_feedback = resume_provenance.as_ref().map(|provenance| {
         let mut feedback = format!(
             "This run is resuming interrupted Harness run {}. The current Git HEAD, task contract, scope, agent configuration, changed paths, and exact diff fingerprint match the last recorded checkpoint. Inspect and continue or correct these paths; do not assume they are complete:\n- {}",
@@ -514,9 +521,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 success: None,
             })?;
 
-            let visual_target = workspace
-                .join("target")
-                .join("burncloud-harness-visual-build");
+            let visual_target = migration_visual_target(&workspace);
             let visual_result = task
                 .visual
                 .as_ref()
@@ -552,6 +557,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                     if let Some(previous_score) = snapshot.score {
                         if visual_score_regressed(previous_score, current_score) {
                             let archive = snapshot.reject_and_restore(attempt)?;
+                            recapture_migration_visual(&workspace, &task);
                             let restored_paths = git.changed_paths()?;
                             let restored_report = scope.evaluate(&restored_paths);
                             let restored_fingerprint = git.diff_fingerprint()?;
@@ -899,6 +905,40 @@ fn visual_artifact_dir(workspace: &Path, task: &TaskSpec) -> Option<PathBuf> {
             .join("visual")
             .join(artifact),
     )
+}
+
+fn visual_report_has_landmarks(workspace: &Path, task: &TaskSpec) -> bool {
+    visual_artifact_dir(workspace, task)
+        .and_then(|directory| std::fs::read(directory.join("report.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|report| {
+            report["landmark_comparison"]["desktop"]
+                .as_object()
+                .is_some()
+                && report["landmark_comparison"]["mobile"]
+                    .as_object()
+                    .is_some()
+        })
+}
+
+fn migration_visual_target(workspace: &Path) -> PathBuf {
+    workspace
+        .join("target")
+        .join("burncloud-harness-visual-build")
+}
+
+fn recapture_migration_visual(workspace: &Path, task: &TaskSpec) {
+    let Some(visual) = task.visual.as_ref() else {
+        return;
+    };
+    let target = migration_visual_target(workspace);
+    let _expected_mismatch = crate::ui_visual::run_migration(workspace, visual, Some(&target));
+    if !visual_report_has_landmarks(workspace, task) {
+        tracing::warn!(
+            task = %task.name,
+            "restored strict visual checkpoint did not produce computed landmark evidence"
+        );
+    }
 }
 
 fn read_visual_score(workspace: &Path, task: &TaskSpec) -> Option<VisualScore> {
