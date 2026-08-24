@@ -179,12 +179,20 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         })?;
 
         let agent_result = if execute_agent {
+            let attempt_feedback = if strict_visual {
+                feedback_with_migration_diagnostic(
+                    previous_feedback.as_deref(),
+                    migration_diagnostic(&state_dir, &task).as_deref(),
+                )
+            } else {
+                previous_feedback.clone()
+            };
             let prompt = burncloud.control_prompt(
                 &task,
                 &routes,
                 &active_invariants,
                 attempt,
-                previous_feedback.as_deref(),
+                attempt_feedback.as_deref(),
             );
             run_agent(
                 &workspace,
@@ -904,6 +912,23 @@ fn read_visual_score(workspace: &Path, task: &TaskSpec) -> Option<VisualScore> {
     })
 }
 
+fn feedback_with_migration_diagnostic(
+    feedback: Option<&str>,
+    diagnostic: Option<&str>,
+) -> Option<String> {
+    let mut combined = feedback.unwrap_or_default().to_owned();
+    if let Some(diagnostic) = diagnostic {
+        if !combined.contains("Read-only parity diagnosis for this migration:") {
+            if !combined.is_empty() {
+                combined.push('\n');
+            }
+            combined.push_str("Read-only parity diagnosis for this migration:\n");
+            combined.push_str(diagnostic);
+        }
+    }
+    (!combined.is_empty()).then_some(combined)
+}
+
 fn migration_diagnostic(state_dir: &Path, task: &TaskSpec) -> Option<String> {
     let safe_name = task
         .name
@@ -1311,7 +1336,7 @@ fn compact_failure(primary: &str, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{visual_score_regressed, VisualScore};
+    use super::{feedback_with_migration_diagnostic, visual_score_regressed, VisualScore};
 
     #[test]
     fn strict_visual_score_rejects_cross_viewport_net_regression() {
@@ -1330,5 +1355,18 @@ mod tests {
 
         assert!(visual_score_regressed(previous, regressed));
         assert!(!visual_score_regressed(previous, improved));
+    }
+
+    #[test]
+    fn migration_diagnostic_is_present_once_on_every_attempt() {
+        let diagnostic = "selector-level diagnosis";
+        let first =
+            feedback_with_migration_diagnostic(Some("verification failed"), Some(diagnostic))
+                .expect("feedback");
+        assert!(first.contains(diagnostic));
+
+        let repeated =
+            feedback_with_migration_diagnostic(Some(&first), Some(diagnostic)).expect("feedback");
+        assert_eq!(repeated.matches(diagnostic).count(), 1);
     }
 }
