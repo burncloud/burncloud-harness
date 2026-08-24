@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{bail, Context, Result};
 
@@ -153,6 +157,11 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
 
     for attempt in 1..=attempt_limit {
         trajectory.record(Event::AttemptStarted { attempt })?;
+        let visual_snapshot = if strict_visual && execute_agent {
+            Some(StrictVisualAttemptSnapshot::capture(&workspace, &task)?)
+        } else {
+            None
+        };
         record_phase_start(&mut trajectory, attempt, RunPhase::Agent)?;
         observer.on_event(RunEvent::Phase {
             attempt,
@@ -476,6 +485,7 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
             }
         }
 
+        let mut visual_rollback = None;
         if strict_visual {
             const CHECK_NAME: &str = "ui-pixel-parity";
             const CHECK_COMMAND: &str = "builtin:strict-ui-pixel-parity";
@@ -523,6 +533,37 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 success: Some(success),
             })?;
             if !success {
+                if let (Some(snapshot), Some(current_score)) = (
+                    visual_snapshot.as_ref(),
+                    read_visual_score(&workspace, &task),
+                ) {
+                    if let Some(previous_score) = snapshot.score {
+                        if visual_score_regressed(previous_score, current_score) {
+                            let archive = snapshot.reject_and_restore(attempt)?;
+                            let restored_paths = git.changed_paths()?;
+                            let restored_report = scope.evaluate(&restored_paths);
+                            let restored_fingerprint = git.diff_fingerprint()?;
+                            trajectory.record(Event::ScopeEvaluated {
+                                attempt,
+                                changed_paths: &restored_paths,
+                                violations: &restored_report.violations,
+                                diff_fingerprint: &restored_fingerprint,
+                            })?;
+                            observer.on_event(RunEvent::Paths {
+                                attempt,
+                                changed: restored_paths,
+                                violations: restored_report.violations,
+                            })?;
+                            visual_rollback = Some(format!(
+                                "Rejected this attempt because combined desktop/mobile changed ratio regressed from {:.8} to {:.8}. The attempt's allowed-path edits were restored and its visual evidence was archived at {}. Continue from the restored checkpoint; inspect the rejected evidence only to avoid repeating that regression.",
+                                previous_score.total(),
+                                current_score.total(),
+                                archive.display()
+                            ));
+                        }
+                    }
+                }
+
                 failed.push(format!(
                     "{CHECK_NAME} (`{CHECK_COMMAND}`): {}",
                     compact_failure(&stderr, &stdout)
@@ -556,7 +597,11 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
         } else {
             "BurnCloud mandatory verification failed. Fix the existing in-scope change; do not widen scope or weaken tests."
         };
-        let feedback = format!("{verification_guidance}\n{}", failed.join("\n"));
+        let mut feedback = format!("{verification_guidance}\n{}", failed.join("\n"));
+        if let Some(rollback) = visual_rollback {
+            feedback.push('\n');
+            feedback.push_str(&rollback);
+        }
         record_retry(
             &mut trajectory,
             observer,
@@ -693,6 +738,166 @@ struct AgentResult {
 enum AgentLine {
     Stdout(String),
     Stderr(String),
+}
+
+#[derive(Clone, Copy)]
+struct VisualScore {
+    desktop: f64,
+    mobile: f64,
+}
+
+impl VisualScore {
+    fn total(self) -> f64 {
+        self.desktop + self.mobile
+    }
+}
+
+fn visual_score_regressed(previous: VisualScore, current: VisualScore) -> bool {
+    current.total() > previous.total() + f64::EPSILON
+}
+
+struct FileSnapshot {
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+}
+
+impl FileSnapshot {
+    fn capture(path: PathBuf) -> Result<Self> {
+        let content = if path.is_file() {
+            Some(std::fs::read(&path).with_context(|| {
+                format!("failed to snapshot strict visual file {}", path.display())
+            })?)
+        } else {
+            None
+        };
+        Ok(Self { path, content })
+    }
+
+    fn restore(&self) -> Result<()> {
+        if let Some(content) = &self.content {
+            if let Some(parent) = self.path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&self.path, content).with_context(|| {
+                format!(
+                    "failed to restore strict visual file {}",
+                    self.path.display()
+                )
+            })?;
+        } else if self.path.exists() {
+            std::fs::remove_file(&self.path).with_context(|| {
+                format!(
+                    "failed to remove attempt-created strict visual file {}",
+                    self.path.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+struct StrictVisualAttemptSnapshot {
+    source_files: Vec<FileSnapshot>,
+    visual_files: Vec<FileSnapshot>,
+    visual_dir: PathBuf,
+    score: Option<VisualScore>,
+}
+
+impl StrictVisualAttemptSnapshot {
+    fn capture(workspace: &Path, task: &TaskSpec) -> Result<Self> {
+        let mut source_files = Vec::new();
+        for allowed in &task.scope.allowed {
+            let relative = Path::new(allowed);
+            let is_exact_relative = !allowed
+                .chars()
+                .any(|character| matches!(character, '*' | '?' | '['))
+                && !relative.is_absolute()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+            if is_exact_relative {
+                source_files.push(FileSnapshot::capture(workspace.join(relative))?);
+            }
+        }
+
+        let visual_dir = visual_artifact_dir(workspace, task)
+            .context("strict visual task is missing its visual artifact route")?;
+        let visual_files = visual_artifact_names()
+            .iter()
+            .map(|name| FileSnapshot::capture(visual_dir.join(name)))
+            .collect::<Result<Vec<_>>>()?;
+        let score = read_visual_score(workspace, task);
+        Ok(Self {
+            source_files,
+            visual_files,
+            visual_dir,
+            score,
+        })
+    }
+
+    fn reject_and_restore(&self, attempt: u32) -> Result<PathBuf> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let archive = self
+            .visual_dir
+            .join(format!("rejected-attempt-{attempt}-{timestamp}"));
+        std::fs::create_dir_all(&archive)?;
+        for name in visual_artifact_names() {
+            let current = self.visual_dir.join(name);
+            if current.is_file() {
+                std::fs::copy(&current, archive.join(name)).with_context(|| {
+                    format!(
+                        "failed to archive rejected visual evidence {}",
+                        current.display()
+                    )
+                })?;
+            }
+        }
+        for snapshot in self.source_files.iter().chain(&self.visual_files) {
+            snapshot.restore()?;
+        }
+        Ok(archive)
+    }
+}
+
+fn visual_artifact_names() -> [&'static str; 5] {
+    [
+        "report.json",
+        "local-desktop.png",
+        "local-mobile.png",
+        "diff-desktop.png",
+        "diff-mobile.png",
+    ]
+}
+
+fn visual_artifact_dir(workspace: &Path, task: &TaskSpec) -> Option<PathBuf> {
+    let route = task
+        .visual
+        .as_ref()?
+        .route
+        .trim_matches('/')
+        .replace(|character: char| !character.is_ascii_alphanumeric(), "-");
+    let artifact = if route.is_empty() { "root" } else { &route };
+    Some(
+        workspace
+            .join("target")
+            .join("burncloud-harness")
+            .join("visual")
+            .join(artifact),
+    )
+}
+
+fn read_visual_score(workspace: &Path, task: &TaskSpec) -> Option<VisualScore> {
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(visual_artifact_dir(workspace, task)?.join("report.json")).ok()?,
+    )
+    .ok()?;
+    Some(VisualScore {
+        desktop: report["pixel_match"]["desktop"]["changed_pixel_ratio"].as_f64()?,
+        mobile: report["pixel_match"]["mobile"]["changed_pixel_ratio"].as_f64()?,
+    })
 }
 
 fn latest_visual_evidence(workspace: &std::path::Path, task: &TaskSpec) -> Option<String> {
@@ -1076,5 +1281,29 @@ fn compact_failure(primary: &str, fallback: &str) -> String {
         trimmed.to_owned()
     } else {
         format!("{}…", trimmed.chars().take(LIMIT).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{visual_score_regressed, VisualScore};
+
+    #[test]
+    fn strict_visual_score_rejects_cross_viewport_net_regression() {
+        let previous = VisualScore {
+            desktop: 0.07,
+            mobile: 0.07,
+        };
+        let regressed = VisualScore {
+            desktop: 0.06,
+            mobile: 0.09,
+        };
+        let improved = VisualScore {
+            desktop: 0.06,
+            mobile: 0.075,
+        };
+
+        assert!(visual_score_regressed(previous, regressed));
+        assert!(!visual_score_regressed(previous, improved));
     }
 }
