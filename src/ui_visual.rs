@@ -35,6 +35,9 @@ pub fn run_migration(
         .retain(|selector| selector.contains("data-visual-fixture"));
     source_fidelity_spec.metric_labels.clear();
     source_fidelity_spec.section_titles.clear();
+    if !source_fidelity_spec.locale_titles.is_empty() {
+        source_fidelity_spec.locale_title_selector = Some("h1".to_owned());
+    }
     source_fidelity_spec.clipping_selectors.clear();
     source_fidelity_spec.mobile_menu = None;
     run(workspace, &source_fidelity_spec, shared_target_dir)
