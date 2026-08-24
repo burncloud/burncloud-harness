@@ -982,13 +982,14 @@ fn run_agent(
 fn terminate_agent_process_tree(child: &mut std::process::Child) -> Result<()> {
     #[cfg(windows)]
     {
-        let status = Command::new("taskkill")
+        // taskkill can itself block while DSH descendants unwind. Fire the tree cleanup
+        // asynchronously, then terminate the owned root so the Harness budget stays bounded.
+        let _cleanup = Command::new("taskkill")
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .status()
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .context("failed to invoke taskkill for timed-out agent")?;
-        if status.success() {
-            return Ok(());
-        }
     }
 
     child
