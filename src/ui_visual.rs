@@ -142,7 +142,7 @@ fn inspect_desktop(
     screenshot(&tab, &output_dir.join("local-desktop.png"))?;
 
     let required_selectors = serde_json::to_string(&spec.required_selectors)?;
-    let evidence: Value = evaluate_json(
+    let mut evidence: Value = evaluate_json(
         &tab,
         &format!(
             r#"(() => {{
@@ -199,6 +199,7 @@ fn inspect_desktop(
         ));
     }
 
+    evidence["oversizedSvg"] = inspect_oversized_svg(&tab, "desktop", failures)?;
     inspect_locales(&tab, spec, failures)?;
     Ok(evidence)
 }
@@ -313,6 +314,8 @@ fn inspect_mobile(
         ));
     }
 
+    evidence["oversizedSvg"] = inspect_oversized_svg(&tab, "mobile", failures)?;
+
     if let Some(menu) = &spec.mobile_menu {
         let trigger = tab
             .wait_for_element_with_custom_timeout(&menu.trigger_selector, Duration::from_secs(5))
@@ -347,6 +350,33 @@ fn inspect_mobile(
     }
 
     Ok(evidence)
+}
+
+fn inspect_oversized_svg(
+    tab: &headless_chrome::Tab,
+    viewport: &str,
+    failures: &mut Vec<String>,
+) -> Result<Value> {
+    let oversized: Value = evaluate_json(
+        tab,
+        r#"(() => [...document.querySelectorAll('svg')]
+            .map((element, index) => {
+                const rect = element.getBoundingClientRect();
+                return {
+                    index,
+                    className: element.getAttribute('class') || '',
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                };
+            })
+            .filter((item) => item.width > 128 || item.height > 128))()"#,
+    )?;
+    if oversized.as_array().is_some_and(|items| !items.is_empty()) {
+        failures.push(format!(
+            "{viewport} oversized SVG elements indicate missing source icon dimensions: {oversized}"
+        ));
+    }
+    Ok(oversized)
 }
 
 fn navigate_local(
