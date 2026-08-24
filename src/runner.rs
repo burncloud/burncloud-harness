@@ -149,6 +149,10 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
                 feedback.push_str("\nLatest strict visual evidence from the current diff:\n");
                 feedback.push_str(&evidence);
             }
+            if let Some(diagnostic) = migration_diagnostic(&state_dir, &task) {
+                feedback.push_str("\nRead-only parity diagnosis for this migration:\n");
+                feedback.push_str(&diagnostic);
+            }
         }
         feedback
     });
@@ -898,6 +902,27 @@ fn read_visual_score(workspace: &Path, task: &TaskSpec) -> Option<VisualScore> {
         desktop: report["pixel_match"]["desktop"]["changed_pixel_ratio"].as_f64()?,
         mobile: report["pixel_match"]["mobile"]["changed_pixel_ratio"].as_f64()?,
     })
+}
+
+fn migration_diagnostic(state_dir: &Path, task: &TaskSpec) -> Option<String> {
+    let safe_name = task
+        .name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    std::fs::read_to_string(
+        state_dir
+            .join("ui-daemon")
+            .join("diagnostics")
+            .join(format!("{safe_name}.md")),
+    )
+    .ok()
 }
 
 fn latest_visual_evidence(workspace: &std::path::Path, task: &TaskSpec) -> Option<String> {
