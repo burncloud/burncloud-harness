@@ -135,11 +135,18 @@ fn run_with_observer_mode<O: RunObserver + ?Sized>(
     })?;
 
     let mut previous_feedback = resume_provenance.as_ref().map(|provenance| {
-        format!(
+        let mut feedback = format!(
             "This run is resuming interrupted Harness run {}. The current Git HEAD, task contract, scope, agent configuration, changed paths, and exact diff fingerprint match the last recorded checkpoint. Inspect and continue or correct these paths; do not assume they are complete:\n- {}",
             provenance.run_id,
             resumed_paths.join("\n- ")
-        )
+        );
+        if strict_visual {
+            if let Some(evidence) = latest_visual_evidence(&workspace, &task) {
+                feedback.push_str("\nLatest strict visual evidence from the current diff:\n");
+                feedback.push_str(&evidence);
+            }
+        }
+        feedback
     });
     let mut reviewed_risks = BTreeSet::new();
     let attempt_limit = if execute_agent { task.max_loops } else { 1 };
@@ -686,6 +693,30 @@ struct AgentResult {
 enum AgentLine {
     Stdout(String),
     Stderr(String),
+}
+
+fn latest_visual_evidence(workspace: &std::path::Path, task: &TaskSpec) -> Option<String> {
+    let route = task
+        .visual
+        .as_ref()?
+        .route
+        .trim_matches('/')
+        .replace(|character: char| !character.is_ascii_alphanumeric(), "-");
+    let artifact = if route.is_empty() { "root" } else { &route };
+    let report_path = workspace
+        .join("target")
+        .join("burncloud-harness")
+        .join("visual")
+        .join(artifact)
+        .join("report.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).ok()?).ok()?;
+    serde_json::to_string_pretty(&serde_json::json!({
+        "report_path": report_path,
+        "pixel_match": report.get("pixel_match"),
+        "failures": report.get("failures"),
+    }))
+    .ok()
 }
 
 fn dsh_headless_command() -> Result<(Command, String)> {
